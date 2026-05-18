@@ -59,3 +59,340 @@ ssh -tt linux 'bash -ic '\''hostname; uname -m; cd /mnt/hgfs/zhuyanbo/Desktop/FY
 ```
 
 如果连接失败，需要记录 SSH 的准确错误，不要把测试写成已通过。
+
+## qimeng2 / RockyOS / eda-00 服务器配置
+
+以下信息从 `paper-RAG/CLAUDE.md` 的服务器配置整合而来，并按当前仓 `module-deletion-test` 的路径和任务边界适配。除非用户明确要求使用这些服务器，否则当前仓仍默认使用上一节的 `linux` 远程主机。
+
+### 服务器总览
+
+| 节点 | 登录脚本 | 角色 | 当前仓用途 |
+| --- | --- | --- | --- |
+| `qimeng2登录节点` | `ssh-qimeng2-open` / `ssh-qimeng2-fast` / `ssh-qimeng2-close` | 中科院计算所 SCC 集群入口和跳板机；登录节点禁止运行代码 | 建立 ControlMaster、同步文件、查看共享目录、进入运行节点 |
+| `rockyos` | `ssh-rockyos8-fast` / `ssh-rockyos-fast` | Rocky Linux 8 登录节点；实际主机名为 `rockyos8-login0` | RockyOS 环境检查、共享目录可见性验证、后续 RockyOS 作业入口 |
+| `eda-00` | `ssh-eda00-fast` | 从 q2 登录节点跳转进入的代码运行节点 | 创建 tmux、激活 conda 环境、运行明确允许的测试和长时间任务 |
+
+通用纪律：
+
+- 登录节点只做连接、同步、查看和轻量环境检查；禁止在登录节点运行项目代码、测试、仿真或长时间任务。
+- 真实代码运行必须进入 `eda-00` 等运行节点，并在 tmux 中执行。
+- 真实 `.env`、storage state、cookie、SQLite taskdb、浏览器 profile 和明文密码不得写入仓库。
+- 本人的所有代码、工作文件、缓存和运行产物默认放在 `/nfs_global/I/qimeng2/zhuyanbo/` 下。
+- 当前仓在 q2 / RockyOS / eda-00 侧的默认项目目录为 `/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test`。
+- 远程认证配置、`authorized_keys`、共享 shell profile 和其他人的文件未经明确批准不得修改。
+
+### qimeng2 登录节点
+
+`qimeng2登录节点` 是 SCC 集群入口，登录账号为共享账号 `qimeng2`。当前仓只在需要远端资源、同步文件或进入运行节点时使用它。
+
+q2 登录节点禁止运行代码；编译、测试、仿真和批处理都必须进入 `eda-00` 等运行节点后再执行。
+
+#### 登录脚本
+
+本机 q2 登录脚本位于 `~/.local/bin/`：
+
+| 脚本 | 用途 | 是否触发 TOTP |
+| --- | --- | --- |
+| `ssh-qimeng2-open` | 建立 ControlMaster 长连接，一次 TOTP 后 4 小时内复用 | 是 |
+| `ssh-qimeng2-fast` | 复用 ControlMaster 执行短命令，推荐日常使用 | 否 |
+| `ssh-qimeng2-close` | 主动关闭 ControlMaster 长连接 | 否 |
+| `ssh-qimeng2` | 旧版单次认证入口，仅在需要独立交互登录时使用 | 是 |
+
+推荐用法：
+
+```bash
+ssh-qimeng2-open
+ssh-qimeng2-fast 'whoami; hostname'
+ssh-qimeng2-fast 'cd /nfs_global/I/qimeng2/zhuyanbo && pwd'
+ssh-qimeng2-close
+```
+
+底层连接信息：
+
+- 主机：`qimeng2@62.234.203.206`，端口 `61020`
+- ICT 局域网：`qimeng2@10.208.120.13`，端口 `61020`
+- ControlMaster socket：`~/.ssh/cm-qimeng2.sock`
+- 凭据文件：`~/.ssh/qimeng_password`、`~/.ssh/totp_secret`
+
+TOTP 限制：每个 6 位验证码 30 秒内只能用一次。优先使用 `ssh-qimeng2-open` + `ssh-qimeng2-fast`，减少重复认证。
+
+#### 文件同步
+
+scp / rsync 走同一 socket：
+
+```bash
+SOCK=~/.ssh/cm-qimeng2.sock
+
+rsync -avz \
+  -e "ssh -o ControlPath=$SOCK -p 61020" \
+  ./ \
+  qimeng2@62.234.203.206:/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test/
+```
+
+多行轻量命令推荐 base64 包装后通过 `ssh-qimeng2-fast` 执行，避免本地 shell 或 expect 误解释引号和分号：
+
+```bash
+B64=$(base64 < /tmp/script.sh | tr -d '\n')
+ssh-qimeng2-fast "echo $B64 | base64 -d | bash"
+```
+
+登录节点只能做同步、查看和轻量环境确认；不要在 q2 登录节点运行 `pytest`、`compileall`、构建、仿真、浏览器或长时间任务。
+
+#### 存储空间
+
+本文中的 `qimengX` 对应当前账号 `qimeng2`，`姓名全拼` 对应 `zhuyanbo`。
+
+服务器内可用的存储空间如下：
+
+1. `/home/I/qimeng2`：存放配置文件，不需要操作。当前仓禁止在该路径下创建项目文件、缓存、环境或运行产物。
+2. `/workspace/I/qimeng2`：存放 anaconda 环境，不需要手动操作。创建 conda 环境时使用规范化环境名，由 conda 自动写入该位置。
+3. `/nfs_global/I/qimeng2/zhuyanbo`：本人工作路径，用于存放代码、项目文件、缓存、下载产物和其它工作文件。
+
+当前仓远端项目目录默认使用：
+
+```bash
+/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test
+```
+
+#### q2 使用规范
+
+1. `/home/I/qimeng2` 下禁止存放任何项目文件，禁止修改该路径下的 `.bashrc`、`.vimrc` 等配置文件。如有需求，先找负责的学长修改。
+2. 每个人的工作路径为 `/nfs_global/I/qimeng2/姓名全拼`；当前账号实际路径为 `/nfs_global/I/qimeng2/zhuyanbo`。所有代码、工作文件、缓存和运行产物都应放在该路径下。
+3. 服务器没有数据备份，删除文件无法找回；删除前必须确认路径和影响范围。
+4. 禁止修改或删除其他人的文件、文件夹和 conda 环境。
+5. 默认登录路径为 `/home/I/qimeng2`，每次登录服务器后必须先 `cd /nfs_global/I/qimeng2/zhuyanbo`。
+6. 由于多人共享一个账号，git 用户名和邮箱必须使用仓库级 local 配置，不要改全局配置：
+
+```bash
+git config --local user.name "zhuyanbo"
+git config --local user.email "<your-email>"
+```
+
+7. 如果使用 VS Code，请统一使用最新版本 `1.98.0`，避免多人共享账号时不同版本互相冲突。
+8. 多次执行远程命令优先复用 ControlMaster；如果必须用 `ssh-qimeng2` 单次模式，多次调用之间至少间隔 30 秒。
+
+### rockyos
+
+`rockyos` 是 Rocky Linux 8 登录节点的文档名称，实际可达目标名为 `rockyos8-login0`；`rockyos-login0` 在 q2 上不可解析。该节点的网络路径仍经过 q2，但日常登录必须直接使用本机 wrapper。
+
+#### 登录脚本
+
+本机 RockyOS wrapper 位于 `~/.local/bin/`：
+
+| 脚本 | 用途 |
+| --- | --- |
+| `ssh-rockyos8-fast` | 复用 q2 ControlMaster 跳转 `rockyos8-login0`，支持交互 shell 或短命令 |
+| `ssh-rockyos-fast` | 通用别名，转发到 `ssh-rockyos8-fast` |
+
+推荐用法：
+
+```bash
+ssh-qimeng2-open
+ssh-rockyos8-fast 'hostname; whoami; pwd'
+ssh-rockyos8-fast
+```
+
+如果需要让 wrapper 一次性输入 RockyOS 密码，只能使用本机临时环境变量或交互读取，不落盘、不提交：
+
+```bash
+read -rsp 'rockyos8-login0 password: ' ROCKYOS8_PASSWORD; echo
+export ROCKYOS8_PASSWORD
+ssh-rockyos8-fast 'hostname; whoami; pwd'
+unset ROCKYOS8_PASSWORD
+```
+
+密码处理规则：
+
+- 不把 RockyOS 密码写入 `CLAUDE.md`、脚本文件、仓库文件、远端文件或日志。
+- 不在远端写 `~/.ssh/authorized_keys`，不修改 SSH server 配置，不改共享 shell profile。
+- 免密登录或远端认证配置变更属于服务器文件修改，未经明确批准不得执行。
+
+#### 已验证环境事实
+
+`rockyos8-login0` 只读探测结论：
+
+- 主机：`RockyOS8-Login0.future.cn`
+- OS：Rocky Linux 8.7，glibc 2.28，kernel `4.18.0-425.10.1.el8_7.x86_64`
+- 用户：`qimeng2`
+- Python：系统 `python3` 为 3.6.8，默认没有 `python`
+- `conda` / `mamba` / `micromamba`：PATH 中不可见
+- `uv` / `uvx` / `pip`：PATH 中不可见
+- `/nfs_global/I/qimeng2/zhuyanbo` 可访问
+- `/workspace/I/qimeng2/anaconda3` 在该节点不可见，因此 CentOS7 登录节点上的 conda base 不能直接照搬为 RockyOS8 默认环境
+
+#### RockyOS 目录与操作边界
+
+RockyOS 侧项目目录继续使用共享路径：
+
+```bash
+/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test
+```
+
+允许操作：
+
+- 轻量登录验证；
+- 只读环境检查；
+- 检查 `/nfs_global/I/qimeng2/zhuyanbo` 下的项目文件是否存在；
+- 后续明确允许时同步代码文件到项目目录。
+
+禁止操作：
+
+- 不在登录节点上运行项目代码、测试、仿真或长时间任务；
+- 不创建或修改 conda env，除非当前任务明确允许；
+- 不安装 uv、Python 包、Playwright、Chromium、Node 或系统依赖，除非当前任务明确允许；
+- 不运行本仓构建、仿真、测试、`pytest` 或 `compileall`，除非当前任务明确允许；
+- 不操作 `/nfs_global/I/qimeng2/zhuyanbo/` 之外的目录。
+
+### eda-00
+
+`eda-00` 是从 `qimeng2登录节点` 进入的代码运行节点。当前仓需要在 q2 集群侧运行测试、构建、仿真或其它长时间任务时，优先进入该节点并使用 tmux。
+
+#### 登录脚本
+
+`eda-00` 一键入口通常通过本机 `~/.local/bin/ssh-eda00-fast` 调用。`paper-RAG` 源仓曾提供仓内 `tools/ssh-eda00-fast`，但当前仓不默认假设该脚本存在；若当前仓没有对应脚本，只使用本机 wrapper 或在明确允许后再迁入脚本。该入口复用 q2 ControlMaster，在 q2 登录节点上跳转到 `eda-00`，支持交互 shell 和短命令模式。
+
+推荐用法：
+
+```bash
+ssh-qimeng2-open
+ssh-eda00-fast 'hostname; whoami; pwd'
+ssh-eda00-fast
+```
+
+如果需要让 wrapper 一次性输入 `eda-00` 密码，只能使用本机临时环境变量或交互读取，不落盘、不提交：
+
+```bash
+read -rsp 'eda-00 password: ' EDA00_PASSWORD; echo
+export EDA00_PASSWORD
+ssh-eda00-fast 'hostname; whoami; cd /nfs_global/I/qimeng2/zhuyanbo && pwd'
+unset EDA00_PASSWORD
+```
+
+密码处理规则：
+
+- 不把 `eda-00` 密码写入 `CLAUDE.md`、脚本文件、仓库文件、远端文件或日志。
+- 不在远端写 `~/.ssh/authorized_keys`，不修改 SSH server 配置，不改共享 shell profile。
+- 免密登录或远端认证配置变更属于服务器文件修改，未经明确批准不得执行。
+
+#### 代码运行流程
+
+正常修改代码和运行代码的顺序如下：
+
+1. 通过 VS Code 或其它 SSH 工具连接服务器，或在本机使用 q2 / eda 登录脚本。
+2. 在共享工作路径下编写或同步代码：
+
+```bash
+cd /nfs_global/I/qimeng2/zhuyanbo
+```
+
+3. 使用 `ssh-eda00-fast` 进入 `eda-00`。
+4. 在 eda 节点创建新的 tmux。tmux 名称必须带姓名首字母，避免被其他同学误操作，例如：
+
+```bash
+tmux new -s zyb-module-deletion
+```
+
+5. 激活 conda 代码运行环境。若需要创建新环境，环境名必须采用 `姓名首字母-环境名称` 格式；`zhuyanbo` 的姓名首字母为 `zyb`，例如：
+
+```bash
+conda create -n zyb-module-deletion
+conda activate zyb-module-deletion
+```
+
+该命令会自动将 conda 环境存放在 `/workspace/I/qimeng2` 下，无需手动指定环境安装路径，也不要在 `/nfs_global/I/qimeng2/zhuyanbo` 下手工堆放 conda base。
+
+6. 在 eda 节点进入项目目录并运行测试或任务：
+
+```bash
+cd /nfs_global/I/qimeng2/zhuyanbo/module-deletion-test
+```
+
+长时间任务必须在 tmux 内运行。短命令 smoke 可以直接通过 wrapper 执行，但不要把完整构建、仿真或长时间测试塞进一次性登录命令。
+
+#### eda-00 使用规范
+
+1. `/workspace/I/qimeng2` 存放 anaconda 环境。conda 环境命名规范为 `姓名首字母-环境名称`。例如承书尧老师创建 eda 环境应使用 `conda create -n csy-eda`；当前仓建议使用 `conda create -n zyb-module-deletion` 这类名称。
+2. 长时间运行代码时必须使用 tmux。
+3. tmux 名称规范与 conda 环境类似，使用 `姓名首字母-tmux名称`，例如 `zyb-module-deletion`。
+4. 运行任务前确认当前路径位于 `/nfs_global/I/qimeng2/zhuyanbo` 下。
+5. 禁止修改或删除其他人的文件、文件夹和 conda 环境。
+6. 服务器没有数据备份，删除文件无法找回；删除前必须确认路径和影响范围。
+
+### RockyOS Apptainer conda 环境
+
+RockyOS 上需要 Apptainer 时，环境由 `eda-00` 创建，再在 RockyOS 上验证同一 conda prefix。不要在 q2 登录节点上创建环境，也不要把环境写入 `/home/I/qimeng2` 或系统目录。
+
+默认环境位置：
+
+```bash
+/nfs_global/I/qimeng2/zhuyanbo/conda-envs/zyb-apptainer
+```
+
+使用边界：
+
+- conda 创建和 Apptainer 安装应通过 `eda-00` 执行。
+- RockyOS 上只执行 `apptainer --version`、`apptainer help` 和运行前置信号审计。
+- conda env prefix、package cache、临时目录和 Apptainer cache/tmp 都必须位于 `/nfs_global/I/qimeng2/zhuyanbo` 下。
+- 安装成功不等于容器镜像 smoke 已通过；镜像 pull / exec / 项目构建或测试需要单独验收。
+- 本步骤不运行当前仓构建、仿真或测试。
+- `paper-RAG` 源仓中的 Apptainer 安装和 crawler smoke 脚本属于该仓专属工具；当前仓只有在脚本被显式迁入且用户明确允许后才可调用。
+
+`paper-RAG` 源仓中与该环境配套的脚本名如下，仅作为服务器配置留档；当前仓未提供这些脚本时不得直接调用：
+
+```bash
+tools/install_rockyos8_apptainer_conda.sh
+tools/install_rockyos8_apptainer_conda.sh --apply --create-only
+tools/install_rockyos8_apptainer_conda.sh --apply --verify-only
+```
+
+如果默认 `conda-forge` 连接不稳定，源仓曾使用镜像源和有界超时：
+
+```bash
+tools/install_rockyos8_apptainer_conda.sh \
+  --apply --create-only \
+  --channel https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge \
+  --conda-timeout 120
+```
+
+### paper-RAG 专属 RockyOS Apptainer crawler smoke 留档
+
+以下内容属于 `paper-RAG` 的服务器端 crawler 验证配置，整合进当前文件是为了保留完整服务器信息；它不是当前仓 `module-deletion-test` 的默认工作流。当前仓只有在相关脚本被显式迁入、任务目标确实需要、且用户明确允许时，才可参考这些命令。
+
+推荐入口：
+
+```bash
+tools/run_rockyos8_apptainer_catalog_smoke.sh
+```
+
+默认只打印计划，不执行远端动作。真实执行必须显式加 `--apply`：
+
+```bash
+tools/run_rockyos8_apptainer_catalog_smoke.sh --apply --prepare-only
+tools/run_rockyos8_apptainer_catalog_smoke.sh --apply --browser-only
+tools/run_rockyos8_apptainer_catalog_smoke.sh --apply --auth-only --sync-auth-state
+tools/run_rockyos8_apptainer_catalog_smoke.sh --apply --sync-auth-state
+```
+
+镜像来源：
+
+- 默认尝试把 `docker://mcr.microsoft.com/playwright/python:v1.59.0-noble` 拉取为 `/nfs_global/I/qimeng2/zhuyanbo/.cache/paper-RAG-apptainer/images/playwright-python-v1.59.0-noble.sif`。
+- 如果网络拉取不可用，优先让用户提供已放在 `/nfs_global/I/qimeng2/zhuyanbo` 下的 SIF，然后使用 `--image-path <sif>`。
+- `--image-path`、cache、tmp、runtime、download dir 和 `papers/` 都必须位于 `/nfs_global/I/qimeng2/zhuyanbo` 下。
+
+认证边界：
+
+- `.env` 和 `acm/runtime/storage_state.json` 默认不同步。
+- 只有显式 `--sync-auth-state` 才同步认证运行态，并在远端设置 `0600`。
+- 脚本不得打印 secret，不得把 storage state、cookie、taskdb、下载 ZIP、debug HTML 或日志提交到主仓。
+
+成功标准：
+
+- `apptainer exec <image> python --version` 成功；
+- 容器内 `python -m playwright --version` 成功；
+- 容器内 `browser.new_page()` 和 `page.goto("about:blank")` 成功；
+- ACM session 通过认证 / 机构授权门禁；
+- 单个 catalog URL 完成 `--bulk-download --organize`；
+- `scripts/verify_run.py --mode bulk-url` 通过；
+- 远端 `papers/<venue>/<year>/<paper-title>/metadata.yml` 和 PDF 标题命名正确。
+
+任何门禁失败都应记录为明确 blocker，例如 `blocked: apptainer-image`、`blocked: container-browser` 或 `blocked: auth/acm`；不能把 Apptainer binary 可见、浏览器进程启动或 ZIP 下载单项成功等同于端到端成功。
