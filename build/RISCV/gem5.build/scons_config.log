@@ -1,0 +1,537 @@
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for linker -Wl,--as-needed support... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_0.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_0.cc <-
+  |  |int main(int, char *[]) { return 0; }
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_0.cc -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_0_a99c4d31ee340b3b628d4db8961d3f04" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_0_a99c4d31ee340b3b628d4db8961d3f04
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for compiler -Wno-free-nonheap-object support... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_0.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_0.cc <-
+  |  |// CheckCxxFlag DO NOTHING
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_0_1f94adb500225551d4008d23a489f7ad.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_0.cc -> _1f94adb500225551d4008d23a489f7ad.o
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for compiler -gz support... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_1.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_1.cc <-
+  |  |// CheckCxxFlag DO NOTHING
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_1_6f6b178c2463fabca26ab8f2f7def379.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_1.cc -> _6f6b178c2463fabca26ab8f2f7def379.o
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for linker -gz support... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_1.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_1.cc <-
+  |  |int main(int, char *[]) { return 0; }
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_1.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_1.cc -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_1_edda7043ff88127f435c07331c1a1350" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_da935ab7a2c376c10f2ce1130ab88c51_1_edda7043ff88127f435c07331c1a1350
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_00aead3e8ca21910d6e3fa70198d4d05" is up to date.
+scons: Configure: The original builder output was:
+  |
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for C header file Python.h... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6f79fff2b5fa95157216534d203df494_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6f79fff2b5fa95157216534d203df494_0.c <-
+  |  |
+  |  |#include <Python.h>
+  |  |
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6f79fff2b5fa95157216534d203df494_0_ea9f129e06dea712429cdf102de0edf5.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_6f79fff2b5fa95157216534d203df494_0.c -> _ea9f129e06dea712429cdf102de0edf5.o
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking Python version... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0.cc <-
+  |  |
+  |  |#include <pybind11/embed.h>
+  |  |
+  |  |int
+  |  |main(int argc, char **argv) {
+  |  |    pybind11::scoped_interpreter guard{};
+  |  |    pybind11::exec(
+  |  |        "import sys\n"
+  |  |        "vi = sys.version_info\n"
+  |  |        "sys.stdout.write('%i.%i.%i' % (vi.major, vi.minor, vi.micro));\n");
+  |  |    return 0;
+  |  |}
+  |  |    
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0.cc -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0_b9ef8df26bb52275615dea6cd1346fbb" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0_b9ef8df26bb52275615dea6cd1346fbb
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0_b9ef8df26bb52275615dea6cd1346fbb.out" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0_b9ef8df26bb52275615dea6cd1346fbb > /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_2176b2d932a60acfa5b4079f6e5ab92b_0_b9ef8df26bb52275615dea6cd1346fbb.out
+  |
+scons: Configure: (cached) 3.13.7
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for accept(0,0,0) in C++ library None... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fa6044680a630c4a205df174495c137c_0.cpp" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fa6044680a630c4a205df174495c137c_0.cpp <-
+  |  |
+  |  |
+  |  |#include "sys/socket.h"
+  |  |
+  |  |int main(void) {
+  |  |  accept(0,0,0);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fa6044680a630c4a205df174495c137c_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_fa6044680a630c4a205df174495c137c_0.cpp -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fa6044680a630c4a205df174495c137c_0_1b2c58bd7e5dfeba3709e4542076c8aa" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_fa6044680a630c4a205df174495c137c_0_1b2c58bd7e5dfeba3709e4542076c8aa
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for zlibVersion() in C++ library z... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_dc915a928df035c3500ecc014c4c1694_0.cpp" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_dc915a928df035c3500ecc014c4c1694_0.cpp <-
+  |  |
+  |  |
+  |  |#include "zlib.h"
+  |  |
+  |  |int main(void) {
+  |  |  zlibVersion();
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_dc915a928df035c3500ecc014c4c1694_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_dc915a928df035c3500ecc014c4c1694_0.cpp -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_dc915a928df035c3500ecc014c4c1694_0_36fb508d63750ee4808ec0d848aa66b2" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_dc915a928df035c3500ecc014c4c1694_0_36fb508d63750ee4808ec0d848aa66b2
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for ZSTD_isError(0) in C++ library zstd... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_32d4c8273999ae510a7b84f2417d2b1b_0.cpp" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_32d4c8273999ae510a7b84f2417d2b1b_0.cpp <-
+  |  |
+  |  |
+  |  |#include "zstd.h"
+  |  |
+  |  |int main(void) {
+  |  |  ZSTD_isError(0);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_32d4c8273999ae510a7b84f2417d2b1b_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_32d4c8273999ae510a7b84f2417d2b1b_0.cpp -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_32d4c8273999ae510a7b84f2417d2b1b_0_a291d3d12f5dea75cf1c795eb2b445a2" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_32d4c8273999ae510a7b84f2417d2b1b_0_a291d3d12f5dea75cf1c795eb2b445a2
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for C library tcmalloc... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_e492448966d6e04631c094ba6d6e8a32_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_e492448966d6e04631c094ba6d6e8a32_0.c <-
+  |  |
+  |  |
+  |  |
+  |  |int main(void) {
+  |  |  
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_e492448966d6e04631c094ba6d6e8a32_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_e492448966d6e04631c094ba6d6e8a32_0.c -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_e492448966d6e04631c094ba6d6e8a32_0_0e0a2e5a7330483121a2ddb965857820" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_e492448966d6e04631c094ba6d6e8a32_0_0e0a2e5a7330483121a2ddb965857820
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for pkg-config package protobuf... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6af8fc24f33b2e97803cd27c62dd06bf" is up to date.
+scons: Configure: The original builder output was:
+  |pkg-config protobuf
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for C header file linux/kvm.h... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d4db39b7cb946e659f69394900767da_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d4db39b7cb946e659f69394900767da_0.c <-
+  |  |
+  |  |#include <linux/kvm.h>
+  |  |
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d4db39b7cb946e659f69394900767da_0_00fc8e9b54310450f0a6bf07c0a56739.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_3d4db39b7cb946e659f69394900767da_0.c -> _00fc8e9b54310450f0a6bf07c0a56739.o
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for timer_create(CLOCK_MONOTONIC, NULL, NULL) in C library None... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_d899d7706565e4bafd9e4c8a7304b06e_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_d899d7706565e4bafd9e4c8a7304b06e_0.c <-
+  |  |
+  |  |
+  |  |#include "time.h"
+  |  |#include "signal.h"
+  |  |
+  |  |int main(void) {
+  |  |  timer_create(CLOCK_MONOTONIC, NULL, NULL);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_d899d7706565e4bafd9e4c8a7304b06e_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_d899d7706565e4bafd9e4c8a7304b06e_0.c -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_d899d7706565e4bafd9e4c8a7304b06e_0_f7cca500ec74b19bd93bcfdaa35f48f8" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_d899d7706565e4bafd9e4c8a7304b06e_0_f7cca500ec74b19bd93bcfdaa35f48f8
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for member exclude_host in struct perf_event_attr...
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_238ff365ce93d3042571511343a9ce78_0.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_238ff365ce93d3042571511343a9ce78_0.cc <-
+  |  |
+  |  |#include <linux/perf_event.h>
+  |  |int main(){
+  |  |  struct perf_event_attr test;
+  |  |  (void)test.exclude_host;
+  |  |  return 0;
+  |  |};
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_238ff365ce93d3042571511343a9ce78_0_6962f9dbac940b70e3e09fe0395c09f0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_238ff365ce93d3042571511343a9ce78_0.cc -> _6962f9dbac940b70e3e09fe0395c09f0.o
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for C header file linux/if_tun.h... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_479afe281e6dd1a87a0a74ae5e0195a7_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_479afe281e6dd1a87a0a74ae5e0195a7_0.c <-
+  |  |
+  |  |#include <linux/if_tun.h>
+  |  |
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_479afe281e6dd1a87a0a74ae5e0195a7_0_8f8811372d02a6ea2521ea3579c8d267.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_479afe281e6dd1a87a0a74ae5e0195a7_0.c -> _8f8811372d02a6ea2521ea3579c8d267.o
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for char temp; backtrace_symbols_fd((void *)&temp, 0, 0) in C library None... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_0.c <-
+  |  |
+  |  |
+  |  |#include "execinfo.h"
+  |  |
+  |  |int main(void) {
+  |  |  char temp; backtrace_symbols_fd((void *)&temp, 0, 0);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: Building "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_0.o" failed in a previous run and all its sources are up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_0.c -> .o
+  |
+scons: Configure: (cached) no
+
+scons: Configure: Checking for char temp; backtrace_symbols_fd((void *)&temp, 0, 0) in C library execinfo... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_1.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_1.c <-
+  |  |
+  |  |
+  |  |#include "execinfo.h"
+  |  |
+  |  |int main(void) {
+  |  |  char temp; backtrace_symbols_fd((void *)&temp, 0, 0);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: Building "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_1.o" failed in a previous run and all its sources are up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_af7b5d3160b17e5102c55215d37b0f8c_1.c -> .o
+  |
+scons: Configure: (cached) no
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for C header file fenv.h... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b63620e7908057d9c68909c7dea2f0c0_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b63620e7908057d9c68909c7dea2f0c0_0.c <-
+  |  |
+  |  |#include <fenv.h>
+  |  |
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b63620e7908057d9c68909c7dea2f0c0_0_6f590716e28822e0087b3f230784c31f.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_b63620e7908057d9c68909c7dea2f0c0_0.c -> _6f590716e28822e0087b3f230784c31f.o
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for C header file png.h... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6a115e90d1ef31132299ba5de9361ca4_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6a115e90d1ef31132299ba5de9361ca4_0.c <-
+  |  |
+  |  |#include <png.h>
+  |  |
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_6a115e90d1ef31132299ba5de9361ca4_0_f7c6757636b749ecd3a33fa442afa6d4.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_6a115e90d1ef31132299ba5de9361ca4_0.c -> _f7c6757636b749ecd3a33fa442afa6d4.o
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for clock_nanosleep(0,0,NULL,NULL) in C library None... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d9727f0784ca6f48b402eb829b556f2_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d9727f0784ca6f48b402eb829b556f2_0.c <-
+  |  |
+  |  |
+  |  |#include "time.h"
+  |  |
+  |  |int main(void) {
+  |  |  clock_nanosleep(0,0,NULL,NULL);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d9727f0784ca6f48b402eb829b556f2_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_3d9727f0784ca6f48b402eb829b556f2_0.c -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_3d9727f0784ca6f48b402eb829b556f2_0_a035b427cfb479195537bbd87e558827" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_3d9727f0784ca6f48b402eb829b556f2_0_a035b427cfb479195537bbd87e558827
+  |
+scons: Configure: (cached) yes
+
+scons: Configure: Checking for C header file valgrind/valgrind.h... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fc44fbdd5cf1cbd0f4445fc96a17746b_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fc44fbdd5cf1cbd0f4445fc96a17746b_0.c <-
+  |  |
+  |  |#include "valgrind/valgrind.h"
+  |  |
+  |  |
+  |
+scons: Configure: Building "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fc44fbdd5cf1cbd0f4445fc96a17746b_0_2a52cf9815ad92ae49744fca5b91c432.o" failed in a previous run and all its sources are up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_fc44fbdd5cf1cbd0f4445fc96a17746b_0.c -> _2a52cf9815ad92ae49744fca5b91c432.o
+  |
+scons: Configure: (cached) no
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_76826d42b48bf7dcbdd4a5a6f80d7da9_0.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_76826d42b48bf7dcbdd4a5a6f80d7da9_0.cc <-
+  |  |
+  |  |        int main() {return 0;}
+  |  |        namespace [[gnu::deprecated("Test namespace deprecation")]]
+  |  |        test_deprecated_namespace {}
+  |  |    
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_76826d42b48bf7dcbdd4a5a6f80d7da9_0_e010152fb0e462b4cb0a851423be394d.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_76826d42b48bf7dcbdd4a5a6f80d7da9_0.cc -> _e010152fb0e462b4cb0a851423be394d.o
+  |
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for pkg-config package hdf5-serial... 
+scons: Configure: Building "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_fc89b39279685ff98c851e10590e2f7f" failed in a previous run and all its sources are up to date.
+scons: Configure: The original builder output was:
+  |pkg-config hdf5-serial
+  |
+scons: Configure: (cached) no
+
+scons: Configure: Checking for pkg-config package hdf5... 
+scons: Configure: Building "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_84ab44f5cba9cb9da49a154d1c2c4a1b" failed in a previous run and all its sources are up to date.
+scons: Configure: The original builder output was:
+  |pkg-config hdf5
+  |
+scons: Configure: (cached) no
+
+scons: Configure: Checking for H5Fcreate("", 0, 0, 0) in C library hdf5... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_405a27e3c1c4653876e1e3238e8ed875_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_405a27e3c1c4653876e1e3238e8ed875_0.c <-
+  |  |
+  |  |
+  |  |#include "hdf5.h"
+  |  |
+  |  |int main(void) {
+  |  |  H5Fcreate("", 0, 0, 0);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: Building "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_405a27e3c1c4653876e1e3238e8ed875_0.o" failed in a previous run and all its sources are up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_405a27e3c1c4653876e1e3238e8ed875_0.c -> .o
+  |
+scons: Configure: (cached) no
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for shm_open("/test", 0, 0) in C library None... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b4e440fe1099a7d4a124ee9f6c6af6d9_0.c" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b4e440fe1099a7d4a124ee9f6c6af6d9_0.c <-
+  |  |
+  |  |
+  |  |#include "sys/mman.h"
+  |  |
+  |  |int main(void) {
+  |  |  shm_open("/test", 0, 0);
+  |  |return 0;
+  |  |}
+  |  |
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b4e440fe1099a7d4a124ee9f6c6af6d9_0.o" is up to date.
+scons: Configure: The original builder output was:
+  | [      CC] RISCV/gem5.build/scons_config/conftest_b4e440fe1099a7d4a124ee9f6c6af6d9_0.c -> .o
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_b4e440fe1099a7d4a124ee9f6c6af6d9_0_6b6fffe939102500195799ac36c9b5b0" is up to date.
+scons: Configure: The original builder output was:
+  | [    LINK]  -> RISCV/gem5.build/scons_config/conftest_b4e440fe1099a7d4a124ee9f6c6af6d9_0_6b6fffe939102500195799ac36c9b5b0
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for compiler -Wno-self-assign-overloaded support... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_2.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_2.cc <-
+  |  |// CheckCxxFlag DO NOTHING
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_2_e620c55037be3dbec42c39d345f71699.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_2.cc -> _e620c55037be3dbec42c39d345f71699.o
+  |
+scons: Configure: (cached) yes
+
+
+file /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/site_scons/gem5_scons/configure.py,line 158:
+	Configure(confdir = /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config)
+scons: Configure: Checking for compiler -Wno-free-nonheap-object support... 
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_3.cc" is up to date.
+scons: Configure: The original builder output was:
+  |/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_3.cc <-
+  |  |// CheckCxxFlag DO NOTHING
+  |
+scons: Configure: "/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/build/RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_3_91dd7fe0cbd5877636ef29792f32c9af.o" is up to date.
+scons: Configure: The original builder output was:
+  | [     CXX] RISCV/gem5.build/scons_config/conftest_342d5457cbf4639ef3e0d4fb7b8ef89b_3.cc -> _91dd7fe0cbd5877636ef29792f32c9af.o
+  |
+scons: Configure: (cached) yes
+
+

@@ -11,6 +11,128 @@
 - `dev-docs/` 是独立 spec 文档仓，不能被主仓跟踪。
 - 需要运行构建、仿真、测试时，默认在远程 Linux 上执行。
 
+## TAGE baseline 共识
+
+后续“将 TAGE/BTBTAGE 降级为 base predictor，并比较模拟器与 RTL 性能下降”的实验，默认从以下两个完整 commit 出发：
+
+```text
+GEM5:      e6172e6a550b1767c8ca4dbb6851e6efdb674c00
+XiangShan: 5123974942833f8d63672f0c132ec9787e8a650a
+```
+
+该 pair 的含义是功能 / 设计语义 baseline：两侧都包含当前已识别的 TAGE 对齐锚点和后续必要工程修复，足以作为 base-only TAGE 改造的实验起点。它不是性能已对齐 baseline；当前尚未证明两侧在同 workload、同统计口径下的 IPC、误预测率或性能 delta 已经一致。
+
+功能对齐锚点：
+
+- GEM5：`b813b5770a5357ad9309e4d8cb8552e572a37049`（BTBTAGE/MGSC behavior align）、`2cf3e3895f015372314a9d6f5bfe3a9c75774ec2`（useful/allocation semantics align）。
+- XiangShan：`5dbef689a8d274e312aa276674ca2bd42086f949`（参数对齐）、`64e7bff7f8a7c85948d8cc26a02e2cb7d6716e83`（prediction selection 对齐）。
+
+后续实验和文档中必须优先引用完整 hash，而不是只引用 `xs-dev`、`kunminghu-v3` 等会移动的分支名。若需要评估性能下降是否一致，必须在上述 baseline 上分别记录 baseline 与 base-only 后的同 workload、同统计项、同运行口径 delta。
+
+## 仿真方式与命令共识
+
+后续修改 TAGE/BTBTAGE 或比较 base-only 前后行为时，默认先使用本节命令。若命令失败，需要记录完整命令、运行节点、commit、返回码和日志路径；不要把较弱验证写成较强结论。
+
+### GEM5 模拟器
+
+GEM5 默认在远程 `linux` 主机运行，进入 Linux 映射路径下的 `GEM5/`。为避免误用 Linuxbrew Python 3.14 导致 `libpython3.14.so.1.0` 缺失，GEM5 构建和单测默认先限定系统 PATH：
+
+```bash
+ssh -tt linux 'bash -ic '\''
+cd /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+git rev-parse HEAD
+git status --short -uno
+scons build/RISCV/cpu/pred/btb/test/tage.test.opt --unit-test -j4
+./build/RISCV/cpu/pred/btb/test/tage.test.opt
+scons build/RISCV/cpu/pred/btb/test/mgsc.test.opt --unit-test -j4
+./build/RISCV/cpu/pred/btb/test/mgsc.test.opt
+'\'''
+```
+
+GEM5 当前已验证的 bounded smoke 使用 `kmhv3.py`、RV64UI raw binary、SimpleMemory、禁用 difftest，并限制最多 10 条指令：
+
+```bash
+ssh -tt linux 'bash -ic '\''
+cd /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+./build/RISCV/gem5.opt ./configs/example/kmhv3.py \
+  --raw-cpt \
+  --generic-rv-cpt=../baremetal/riscv-tests/isa/build/rv64ui/rv64ui-p-add/rv64ui-p-add.bin \
+  --mem-type=SimpleMemory \
+  --disable-difftest \
+  --maxinsts=10
+'\'''
+```
+
+这组 GEM5 命令的证明范围：
+
+- `tage.test.opt` / `mgsc.test.opt` 是 BTBTAGE/MGSC 模块级快速验证，适合每次修改后先跑。
+- `kmhv3.py` bounded smoke 只证明 GEM5、配置脚本、raw binary 输入和受控退出链路可用。
+- `--disable-difftest` 与 `--maxinsts=10` 明确说明它不是完整程序级 pass、不是 GEM5 difftest，也不是性能对齐或性能下降 delta 证据。
+
+### Chisel / RTL
+
+XiangShan Chisel 编译、Verilog 生成、Verilator emu 和 difftest 默认在 q2 的 `eda-00` 运行节点执行。`qimeng2` 登录节点只允许建连、同步和轻量检查，禁止运行编译、测试、仿真或长任务。
+
+进入 q2 后先确认在运行节点和项目路径：
+
+```bash
+ssh-qimeng2-open
+ssh-eda00-fast
+cd /nfs_global/I/qimeng2/zhuyanbo/module-deletion-test/XiangShan
+test "$(hostname)" = "eda-00"
+git rev-parse HEAD
+git status --short -uno
+```
+
+当前 q2 用户态工具链环境：
+
+```bash
+export HOME=/nfs_global/I/qimeng2/zhuyanbo
+export XDG_CACHE_HOME=/nfs_global/I/qimeng2/zhuyanbo/.cache
+export COURSIER_CACHE=/nfs_global/I/qimeng2/zhuyanbo/.cache/coursier
+export MILL_DOWNLOAD_PATH=/nfs_global/I/qimeng2/zhuyanbo/.cache/mill/download
+export JAVA_HOME=/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-chisel/jdk17
+export VERILATOR_ENV=/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-verilator
+export FIRTOOL_ENV=/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-firtool-1.135.0
+export CHISEL_FIRTOOL_PATH=$FIRTOOL_ENV/bin
+export FIRTOOL=$FIRTOOL_ENV/bin/firtool
+export PATH=$JAVA_HOME/bin:/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-chisel/bin:$VERILATOR_ENV/bin:$FIRTOOL_ENV/bin:$PATH
+export CC=$VERILATOR_ENV/bin/x86_64-conda-linux-gnu-gcc
+export CXX=$VERILATOR_ENV/bin/x86_64-conda-linux-gnu-g++
+export CPATH=$VERILATOR_ENV/include:/workspace/I/qimeng2/anaconda3/include:$CPATH
+export LIBRARY_PATH=$VERILATOR_ENV/lib:/workspace/I/qimeng2/anaconda3/lib:$LIBRARY_PATH
+export NEMU_HOME=/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test/XiangShan/ready-to-run
+export AM_HOME=/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test/XiangShan/ready-to-run
+```
+
+Chisel 轻量编译和基础 ScalaTest：
+
+```bash
+mill -i xiangshan.compile
+mill -i xiangshan.test.compile
+mill -i xiangshan.test.testOnly xiangshan.frontend.bpu.SaturateCounterTest
+mill -i xiangshan.test.testOnly xiangshan.frontend.bpu.SignedSaturateCounterTest
+```
+
+完整 RTL/difftest smoke 使用 `TLMinimalConfig`、单核、2 个 emu 线程和 `ready-to-run/coremark-2-iteration.bin`：
+
+```bash
+test -s ready-to-run/coremark-2-iteration.bin
+test -s ready-to-run/riscv64-nemu-interpreter-so
+make verilog CONFIG=TLMinimalConfig NUM_CORES=1 -j8
+make emu CONFIG=TLMinimalConfig NUM_CORES=1 EMU_THREADS=2 PGO_CFLAGS=-DVerilatedTraceBaseC=VerilatedVcdC -j8
+timeout 7200 ./build/emu -b 0 -e 0 -i ./ready-to-run/coremark-2-iteration.bin --diff ./ready-to-run/riscv64-nemu-interpreter-so
+```
+
+这组 Chisel / RTL 命令的证明范围：
+
+- `mill -i xiangshan.compile` 和 `xiangshan.test.compile` 证明 Chisel 编译链路可用。
+- `SaturateCounterTest` / `SignedSaturateCounterTest` 是 BPU 基础计数器 smoke，不是完整 TAGE predictor 行为测试。
+- `make verilog` / `make emu` / coremark difftest 证明当前 RTL 工程入口、Verilog 生成、Verilator emu 和 NEMU difftest 路径可运行；已有成功结果为 `HIT GOOD TRAP`、`instrCnt = 663687`、`cycleCnt = 483463`、`IPC = 1.372777`。
+- 该 RTL/difftest 证据仍不是与 GEM5 同 workload、同统计口径的性能对齐证明；性能下降一致性必须另行固定两侧 workload、运行长度、统计项和采样口径。
+
 ## 默认远程 Linux 环境
 
 本地机器为 macOS，主要用于编辑代码与 Codex/Claude 交互。构建、仿真、测试命令默认通过 SSH 在远程主机 `linux` 上执行。

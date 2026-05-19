@@ -1,0 +1,1 @@
+/mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test/GEM5/src/python/m5/objects/__init__.py
