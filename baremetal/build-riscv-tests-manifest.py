@@ -22,6 +22,7 @@ STATUSES = {
     "blocked_missing_artifact",
 }
 DEFAULT_SUITES = ("rv64ui", "rv64um", "rv64mi")
+DEFAULT_BACKENDS = ("xiangshan", "gem5")
 
 
 def repo_paths() -> tuple[Path, Path, Path]:
@@ -75,6 +76,28 @@ def classify_needs(suite: str, name: str) -> list[str]:
     return sorted(needs)
 
 
+def exit_protocol(backend: str) -> dict:
+    if backend == "gem5":
+        return {
+            "backend": backend,
+            "pass": "m5_exit pseudo instruction",
+            "fail": "m5_fail pseudo instruction with code=1",
+            "note": "gem5-only protocol; not intended for XiangShan/NEMU",
+        }
+    if backend == "xiangshan":
+        return {
+            "backend": backend,
+            "pass": "a0=0 then ebreak",
+            "fail": "a0=1 then ebreak",
+            "note": "GOOD TRAP compatible protocol for XiangShan/NEMU style runners",
+        }
+    raise ValueError(f"unknown exit backend: {backend}")
+
+
+def backend_define(backend: str) -> str:
+    return f"-DRVTEST_EXIT_BACKEND_{backend.upper()}"
+
+
 def enumerate_sources(isa_dir: Path, suites: list[str], only: set[str]) -> list[dict]:
     tests: list[dict] = []
     for suite in suites:
@@ -107,11 +130,9 @@ def enumerate_sources(isa_dir: Path, suites: list[str], only: set[str]) -> list[
                     "status": "unsupported",
                     "reason": "enumerated but not built yet",
                     "needs": classify_needs(suite, name),
-                    "exit_protocol": {
-                        "pass": "a0=0 then ebreak",
-                        "fail": "a0=1 then ebreak",
-                        "note": "bounded maxinst runs are startup smoke only, not pass/fail verdicts",
-                    },
+                    "exit_protocol": exit_protocol("xiangshan"),
+                    "exit_protocols": {backend: exit_protocol(backend) for backend in DEFAULT_BACKENDS},
+                    "compatible_backends": list(DEFAULT_BACKENDS),
                 }
             )
     return tests
@@ -144,9 +165,10 @@ def build_one(
     arch: str,
     abi: str,
     timeout: int,
+    backend: str,
 ) -> None:
     target = test["id"]
-    out_dir = build_root / test["suite"] / target
+    out_dir = build_root / backend / test["suite"] / target
     elf = out_dir / target
     bin_path = out_dir / f"{target}.bin"
     dump = out_dir / f"{target}.dump"
@@ -161,6 +183,7 @@ def build_one(
         "-ffreestanding",
         "-fno-pic",
         "-fno-pie",
+        backend_define(backend),
         "-static",
         "-nostdlib",
         "-nostartfiles",
@@ -178,30 +201,35 @@ def build_one(
         str(elf),
     ]
     status, rc = run_command(command, build_log, timeout)
-    test["build"] = {
+    test.setdefault("builds", {})[backend] = {
         "command": command,
         "return_code": rc,
         "status": status,
         "log_path": str(build_log),
     }
-    test["status"] = status
-    test["reason"] = "compiled" if status == "pass" else f"build {status}"
+    test["status"] = status if status != "pass" else test.get("status", "pass")
+    test["reason"] = "compiled" if status == "pass" else f"{backend} build {status}"
     test["arch"] = arch
     test["abi"] = abi
-    test["artifacts"] = {
+    artifacts = {
         "elf": str(elf),
         "bin": str(bin_path),
         "dump": str(dump),
         "build_log": str(build_log),
     }
+    test.setdefault("artifacts_by_backend", {})[backend] = artifacts
+    if backend == "xiangshan" or "artifacts" not in test:
+        test["artifacts"] = artifacts
+        test["build"] = test["builds"][backend]
+        test["exit_protocol"] = exit_protocol(backend)
     if status != "pass":
         return
     objcopy_status, objcopy_rc = run_command([tools["objcopy"], "-O", "binary", str(elf), str(bin_path)], build_log.with_suffix(".objcopy.log"), timeout)
     objdump_status, objdump_rc = run_command([tools["objdump"], "-alDS", "-M", "no-aliases", str(elf)], dump, timeout)
     if objcopy_status != "pass" or objdump_status != "pass" or not bin_path.exists() or bin_path.stat().st_size == 0:
         test["status"] = "fail"
-        test["reason"] = "post-link artifact generation failed"
-        test["build"]["post"] = {
+        test["reason"] = f"{backend} post-link artifact generation failed"
+        test["builds"][backend]["post"] = {
             "objcopy_status": objcopy_status,
             "objcopy_return_code": objcopy_rc,
             "objdump_status": objdump_status,
@@ -232,13 +260,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("RISCV_TEST_BUILD_TIMEOUT", "60")))
     parser.add_argument("--arch", default=os.environ.get("RISCV_ARCH", "rv64ima_zicsr_zifencei"))
     parser.add_argument("--abi", default=os.environ.get("RISCV_ABI", "lp64"))
+    parser.add_argument("--backend", action="append", choices=DEFAULT_BACKENDS, help="exit backend to build; defaults to xiangshan and gem5")
     args = parser.parse_args(argv)
 
     suites = args.suite or list(DEFAULT_SUITES)
+    backends = args.backend or list(DEFAULT_BACKENDS)
     only = set(args.test)
     build_root = args.build_dir.resolve()
     manifest_path = args.manifest or build_root / "manifest.json"
     tests = enumerate_sources(isa_dir, suites, only)
+    for test in tests:
+        if test.get("status") != "blocked_missing_artifact":
+            test["exit_protocols"] = {backend: exit_protocol(backend) for backend in backends}
+            test["compatible_backends"] = list(backends)
 
     gcc = find_tool("RISCV_GCC", ("riscv64-unknown-elf-gcc", "riscv64-linux-gnu-gcc"))
     objcopy = find_tool("RISCV_OBJCOPY", ("riscv64-unknown-elf-objcopy", "riscv64-linux-gnu-objcopy"))
@@ -258,16 +292,22 @@ def main(argv: list[str]) -> int:
         for test in tests:
             if test.get("status") == "blocked_missing_artifact":
                 continue
-            build_one(
-                test,
-                root,
-                isa_dir,
-                build_root,
-                {k: str(v) for k, v in tools.items() if v},
-                suite_arch(test["suite"], args.arch),
-                args.abi,
-                args.timeout,
-            )
+            test["status"] = "pass"
+            test["reason"] = "compiled"
+            for backend in backends:
+                build_one(
+                    test,
+                    root,
+                    isa_dir,
+                    build_root,
+                    {k: str(v) for k, v in tools.items() if v},
+                    suite_arch(test["suite"], args.arch),
+                    args.abi,
+                    args.timeout,
+                    backend,
+                )
+                if test["status"] != "pass":
+                    break
 
     manifest = {
         "schema_version": 1,
@@ -275,6 +315,7 @@ def main(argv: list[str]) -> int:
         "generator": str(Path(__file__).resolve()),
         "isa_dir": str(isa_dir),
         "build_dir": str(build_root),
+        "exit_backends": backends,
         "toolchain": tools,
         "status_enum": sorted(STATUSES),
         "suites": suites,

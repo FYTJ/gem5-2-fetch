@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Statically audit RV64 baremetal exit protocol anchors."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def check_contains(name: str, path: Path, needles: list[str]) -> dict:
+    text = read_text(path) if path.exists() else ""
+    missing = [needle for needle in needles if needle not in text]
+    return {
+        "name": name,
+        "path": str(path),
+        "status": "pass" if path.exists() and not missing else "fail",
+        "missing": missing,
+    }
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "rv64-exit-protocol" / "results.json")
+    args = parser.parse_args(argv)
+
+    checks = [
+        check_contains(
+            "riscv-test-pass-fail-macros",
+            root / "baremetal" / "riscv-tests" / "isa" / "riscv_test.h",
+            ["RVTEST_PASS", "RVTEST_FAIL"],
+        ),
+        check_contains(
+            "baremetal-start-uses-shared-exit-macro",
+            root / "baremetal" / "start.S",
+            ["call main", "mtvec_handler", "RVTEST_EXIT_FAIL"],
+        ),
+        check_contains(
+            "baremetal-exit-backends",
+            root / "baremetal" / "riscv-tests" / "isa" / "rvtest_exit.h",
+            ["RVTEST_EXIT_BACKEND_GEM5", "RVTEST_GEM5_M5_EXIT_INSN", "RVTEST_GEM5_M5_FAIL_INSN", "ebreak"],
+        ),
+        check_contains(
+            "gem5-riscv-m5op-encoding",
+            root / "GEM5" / "util" / "m5" / "src" / "abi" / "riscv" / "m5op.S",
+            [".long 0x0000007b |", "func << 25"],
+        ),
+        check_contains(
+            "gem5-m5op-constants",
+            root / "GEM5" / "include" / "gem5" / "asm" / "generic" / "m5ops.h",
+            ["M5OP_EXIT", "0x21", "M5OP_FAIL", "0x22"],
+        ),
+        check_contains(
+            "gem5-m5-exit-fail-log-markers",
+            root / "GEM5" / "src" / "sim" / "pseudo_inst.cc",
+            ["m5_exit instruction encountered", "m5_fail instruction encountered"],
+        ),
+        check_contains(
+            "xiangshan-good-trap-runner-marker",
+            root / "XiangShan" / "debug" / "cputest.sh",
+            ["HIT GOOD TRAP", "riscv64-noop"],
+        ),
+        check_contains(
+            "xiangshan-emu-make-target",
+            root / "XiangShan" / "Makefile",
+            ["emu:", "difftest"],
+        ),
+    ]
+    status = "pass" if all(check["status"] == "pass" for check in checks) else "fail"
+    payload = {
+        "schema_version": 1,
+        "layer": "l3",
+        "target": "rv64-exit-protocol-static-audit",
+        "status": status,
+        "checks": checks,
+        "notes": [
+            "This audit only verifies source anchors. It does not prove that a target simulator consumes the protocol at runtime.",
+            "GEM5 m5 op encoding is defined as 0x0000007b | (func << 25), with M5OP_EXIT=0x21 and M5OP_FAIL=0x22.",
+        ],
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={status}")
+    print("VALIDATION_REASON=rv64 exit protocol static audit")
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

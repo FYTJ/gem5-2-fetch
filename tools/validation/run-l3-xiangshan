@@ -1,29 +1,212 @@
 #!/usr/bin/env python3
-"""Record XiangShan L3 gate status; actual emu/difftest must run on eda-00."""
+"""Run or guard XiangShan L3 emu/difftest gates for RV64 tests."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
+
+STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def load_manifest(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_matches(test: dict, filters: set[str]) -> bool:
+    if not filters:
+        return True
+    names = {
+        test.get("id", ""),
+        test.get("name", ""),
+        f"{test.get('suite', '')}/{test.get('name', '')}",
+        f"{test.get('suite', '')}-p-{test.get('name', '')}",
+    }
+    return bool(names & filters)
+
+
+def artifact_for_backend(root: Path, test: dict, backend: str) -> Path:
+    by_backend = test.get("artifacts_by_backend", {})
+    raw = by_backend.get(backend, {}).get("bin", "")
+    if not raw and backend == "xiangshan":
+        raw = test.get("artifacts", {}).get("bin", "")
+    path = Path(raw)
+    if path.exists():
+        return path
+    marker = "baremetal/"
+    if marker in raw:
+        return root / marker.rstrip("/") / raw.split(marker, 1)[1]
+    return path
+
+
+def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, str]:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    if "HIT GOOD TRAP" in text:
+        return "pass", "HIT GOOD TRAP"
+    if "HIT BAD TRAP" in text:
+        return "fail", "HIT BAD TRAP"
+    lowered = text.lower()
+    if "difftest" in lowered and any(term in lowered for term in ("fail", "mismatch", "abort")):
+        return "fail", "difftest failure marker"
+    if timed_out:
+        return "timeout", "xiangshan emu timed out"
+    if rc != 0:
+        return "fail", "xiangshan emu returned non-zero"
+    return "unsupported", "no recognized XiangShan pass/fail marker"
+
+
+def summarize(rows: list[dict]) -> dict:
+    by_status = {status: 0 for status in STATUS_ENUM}
+    by_suite: dict[str, dict[str, int]] = {}
+    for row in rows:
+        status = row["status"]
+        by_status[status] = by_status.get(status, 0) + 1
+        suite = row.get("suite", "unknown")
+        by_suite.setdefault(suite, {s: 0 for s in STATUS_ENUM})
+        by_suite[suite][status] = by_suite[suite].get(status, 0) + 1
+    return {"total": len(rows), "by_status": by_status, "by_suite": by_suite}
+
+
+def write_payload(output: Path, payload: dict) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={payload['status']}")
+    print(f"VALIDATION_REASON={payload['reason']}")
+
+
+def blocked_rows(tests: list[dict], reason: str, status: str = "blocked_env") -> list[dict]:
+    if not tests:
+        return [{"stage": "isa", "status": status, "reason": reason}]
+    return [
+        {
+            "id": test["id"],
+            "suite": test["suite"],
+            "backend": "xiangshan",
+            "status": status,
+            "reason": reason,
+        }
+        for test in tests
+    ]
+
+
+def run_one(root: Path, test: dict, output_dir: Path, timeout: int, emu: Path, ref: Path) -> dict:
+    test_id = test["id"]
+    bin_path = artifact_for_backend(root, test, "xiangshan")
+    if not bin_path.exists():
+        return {
+            "id": test_id,
+            "suite": test["suite"],
+            "backend": "xiangshan",
+            "status": "blocked_missing_artifact",
+            "reason": "missing xiangshan backend bin artifact",
+            "bin": str(bin_path),
+        }
+    if not emu.exists() or not ref.exists():
+        return {
+            "id": test_id,
+            "suite": test["suite"],
+            "backend": "xiangshan",
+            "status": "blocked_missing_artifact",
+            "reason": "missing XiangShan emu or difftest reference",
+            "bin": str(bin_path),
+            "emu": str(emu),
+            "ref": str(ref),
+        }
+    log_path = output_dir / "logs" / f"{test_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [str(emu), "-b", "0", "-e", "0", "-i", str(bin_path), "--diff", str(ref)]
+    start = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            completed = subprocess.run(command, cwd=root / "XiangShan", stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            rc = completed.returncode
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout}s\n")
+            rc = None
+            timed_out = True
+    status, reason = classify_log(log_path, rc, timed_out)
+    return {
+        "id": test_id,
+        "suite": test["suite"],
+        "backend": "xiangshan",
+        "status": status,
+        "reason": reason,
+        "return_code": rc,
+        "command": command,
+        "bin": str(bin_path),
+        "emu": str(emu),
+        "ref": str(ref),
+        "log_path": str(log_path),
+        "host_time": round(time.monotonic() - start, 3),
+    }
+
+
 def main(argv: list[str]) -> int:
     root = repo_root()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("isa", "medium", "spec2006"), required=True)
+    parser.add_argument("--manifest", type=Path, default=root / "baremetal" / "riscv-tests" / "isa" / "build" / "manifest.json")
     parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "l3-xiangshan" / "results.json")
+    parser.add_argument("--repo-root", type=Path, default=root)
+    parser.add_argument("--test", action="append", default=[], help="test filter: name, suite/name, or manifest id")
+    parser.add_argument("--per-test-timeout", type=int, default=300)
+    parser.add_argument("--emu", type=Path, default=None)
+    parser.add_argument("--diff", type=Path, default=None)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    root = args.repo_root.resolve()
     host = socket.gethostname()
     on_eda = host == "eda-00" or "eda-00" in host
-    status = "unsupported" if on_eda else "blocked_env"
-    reason = "emu runner placeholder reached eda-00 but build command is not wired in this local invocation" if on_eda else "XiangShan full-system emu/difftest must run on q2 eda-00, not on this host"
+    tests: list[dict] = []
+    if args.manifest.exists():
+        filters = set(args.test)
+        tests = [test for test in load_manifest(args.manifest).get("tests", []) if test_matches(test, filters)]
+    if args.stage != "isa":
+        reason = "XiangShan medium/SPEC stages are not wired for RV64 sample runner"
+        rows = blocked_rows(tests, reason, "unsupported")
+        status = "unsupported"
+    elif args.dry_run:
+        reason = "dry-run only"
+        rows = [
+            {
+                "id": test["id"],
+                "suite": test["suite"],
+                "backend": "xiangshan",
+                "status": "unsupported",
+                "reason": reason,
+                "bin": str(artifact_for_backend(root, test, "xiangshan")),
+            }
+            for test in tests
+        ]
+        status = "unsupported"
+    elif not on_eda:
+        reason = "XiangShan full-system emu/difftest must run on q2 eda-00, not on this host"
+        rows = blocked_rows(tests, reason, "blocked_env")
+        status = "blocked_env"
+    elif not tests:
+        reason = "no manifest entries matched requested tests"
+        rows = []
+        status = "blocked_missing_artifact"
+    else:
+        emu = args.emu or root / "XiangShan" / "build" / "emu"
+        ref = args.diff or root / "XiangShan" / "ready-to-run" / "riscv64-nemu-interpreter-so"
+        rows = [run_one(root, test, args.output.parent, args.per_test_timeout, emu, ref) for test in tests]
+        summary = summarize(rows)
+        status = "pass" if summary["total"] and summary["by_status"].get("pass", 0) == summary["total"] else "fail"
+        reason = "all selected XiangShan entries passed" if status == "pass" else "selected XiangShan entries did not fully pass"
+    summary = summarize(rows)
     payload = {
         "schema_version": 1,
         "layer": "l3",
@@ -32,15 +215,11 @@ def main(argv: list[str]) -> int:
         "host": host,
         "status": status,
         "reason": reason,
-        "summary": {"total": 1, "by_status": {status: 1}},
-        "results": [{"stage": args.stage, "status": status, "reason": reason}],
+        "summary": summary,
+        "results": rows,
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    print(f"VALIDATION_STATUS={status}")
-    print(f"VALIDATION_REASON={reason}")
-    return 0 if status in {"unsupported", "blocked_env"} else 1
+    write_payload(args.output, payload)
+    return 0 if status in {"pass", "unsupported", "blocked_env"} else 1
 
 
 if __name__ == "__main__":

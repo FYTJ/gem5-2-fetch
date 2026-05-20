@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Select reproducible RV64 samples and optionally run target validators."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import random
+import subprocess
+import sys
+from pathlib import Path
+
+
+TARGETS = ("gem5", "xiangshan", "both")
+RANDOM_POOL_EXCLUDED_NEEDS = {
+    "breakpoint",
+    "counter",
+    "csr",
+    "ecall",
+    "exception",
+    "illegal_or_fetch_exception",
+    "machine_mode",
+    "misaligned",
+    "pmp",
+    "trap_or_csr_sensitive",
+    "zicntr",
+}
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def load_manifest(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_ref(test: dict) -> str:
+    return f"{test.get('suite', '')}/{test.get('name', '')}"
+
+
+def backend_ready(test: dict, backend: str) -> bool:
+    if test.get("status") != "pass":
+        return False
+    if backend not in test.get("artifacts_by_backend", {}):
+        return False
+    builds = test.get("builds", {})
+    return builds.get(backend, {}).get("status") == "pass"
+
+
+def candidate_rows(manifest: dict) -> tuple[list[dict], list[dict]]:
+    candidates: list[dict] = []
+    rejected: list[dict] = []
+    for test in manifest.get("tests", []):
+        missing = [backend for backend in ("gem5", "xiangshan") if not backend_ready(test, backend)]
+        row = {
+            "id": test.get("id"),
+            "suite": test.get("suite"),
+            "name": test.get("name"),
+            "ref": test_ref(test),
+            "needs": test.get("needs", []),
+        }
+        excluded_needs = sorted(set(test.get("needs", [])) & RANDOM_POOL_EXCLUDED_NEEDS)
+        if missing:
+            rejected.append({**row, "reason": f"backend not ready: {', '.join(missing)}"})
+        elif excluded_needs:
+            rejected.append({**row, "reason": f"not in random pool: high-risk needs {', '.join(excluded_needs)}"})
+        else:
+            candidates.append(row)
+    candidates.sort(key=lambda item: item["id"])
+    rejected.sort(key=lambda item: item["id"] or "")
+    return candidates, rejected
+
+
+def select(candidates: list[dict], seed: int, count: int) -> list[dict]:
+    rng = random.Random(seed)
+    return rng.sample(candidates, count)
+
+
+def run_target(root: Path, target: str, manifest: Path, selected: list[dict], output_dir: Path, timeout: int) -> dict:
+    if target == "gem5":
+        tool = root / "tools" / "validation" / "run-l3-gem5"
+    elif target == "xiangshan":
+        tool = root / "tools" / "validation" / "run-l3-xiangshan"
+    else:
+        raise ValueError(f"unknown target: {target}")
+    target_output = output_dir / target / "results.json"
+    command = [
+        str(tool),
+        "--stage",
+        "isa",
+        "--manifest",
+        str(manifest),
+        "--output",
+        str(target_output),
+        "--per-test-timeout",
+        str(timeout),
+    ]
+    for item in selected:
+        command.extend(["--test", item["ref"]])
+    completed = subprocess.run(command, cwd=root, check=False)
+    if target_output.exists():
+        payload = json.loads(target_output.read_text(encoding="utf-8"))
+    else:
+        payload = {
+            "schema_version": 1,
+            "target": target,
+            "status": "fail",
+            "reason": "target runner did not produce output",
+            "return_code": completed.returncode,
+            "command": command,
+        }
+    payload.setdefault("command", command)
+    payload["return_code"] = completed.returncode
+    return payload
+
+
+def write_markdown(path: Path, payload: dict) -> None:
+    lines = [
+        "# RV64 random sample validation",
+        "",
+        f"- status: `{payload['status']}`",
+        f"- reason: {payload['reason']}",
+        f"- seed: `{payload['seed']}`",
+        f"- count: `{payload['count']}`",
+        f"- candidate_count: `{payload['candidate_count']}`",
+        "",
+        "## Selected Tests",
+        "",
+        "| id | suite | name | needs |",
+        "|---|---|---|---|",
+    ]
+    for item in payload["selected"]:
+        lines.append(f"| `{item['id']}` | `{item['suite']}` | `{item['name']}` | {', '.join(item.get('needs', []))} |")
+    lines.extend(["", "## Target Results", ""])
+    if not payload["target_results"]:
+        lines.append("dry-run: no target runner was executed.")
+    for target, result in payload["target_results"].items():
+        lines.append(f"- `{target}`: `{result.get('status')}` - {result.get('reason')}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, default=root / "baremetal" / "riscv-tests" / "isa" / "build" / "manifest.json")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--count", type=int, default=5)
+    parser.add_argument("--target", choices=TARGETS, default="both")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "rv64-random-sample" / "results.json")
+    parser.add_argument("--markdown", type=Path, default=None)
+    parser.add_argument("--per-test-timeout", type=int, default=300)
+    args = parser.parse_args(argv)
+
+    seed = args.seed
+    if seed is None:
+        seed = int(_dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d%H%M%S"))
+    manifest = load_manifest(args.manifest)
+    candidates, rejected = candidate_rows(manifest)
+    selected: list[dict] = []
+    target_results: dict[str, dict] = {}
+    if len(candidates) >= args.count:
+        selected = select(candidates, seed, args.count)
+    if len(candidates) < args.count:
+        status = "fail"
+        reason = f"not enough compatible candidates: need {args.count}, got {len(candidates)}"
+    elif args.dry_run:
+        status = "pass"
+        reason = "dry-run selected tests without executing targets"
+    else:
+        targets = ("gem5", "xiangshan") if args.target == "both" else (args.target,)
+        for target in targets:
+            target_results[target] = run_target(root, target, args.manifest, selected, args.output.parent, args.per_test_timeout)
+        status = "pass" if all(result.get("status") == "pass" for result in target_results.values()) else "fail"
+        reason = "all selected target runs passed" if status == "pass" else "selected target runs did not fully pass"
+    payload = {
+        "schema_version": 1,
+        "status": status,
+        "reason": reason,
+        "seed": seed,
+        "count": args.count,
+        "target": args.target,
+        "dry_run": args.dry_run,
+        "candidate_count": len(candidates),
+        "rejected_count": len(rejected),
+        "random_pool_excluded_needs": sorted(RANDOM_POOL_EXCLUDED_NEEDS),
+        "candidates": candidates,
+        "rejected": rejected,
+        "selected": selected,
+        "target_results": target_results,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    markdown = args.markdown or args.output.with_suffix(".md")
+    write_markdown(markdown, payload)
+    print(json.dumps({k: payload[k] for k in ("status", "reason", "seed", "candidate_count", "selected")}, indent=2, sort_keys=True))
+    print(f"results={args.output}")
+    print(f"summary={markdown}")
+    print(f"VALIDATION_STATUS={status}")
+    print(f"VALIDATION_REASON={reason}")
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

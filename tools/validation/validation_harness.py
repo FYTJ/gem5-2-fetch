@@ -213,8 +213,8 @@ def build_gates(root: Path, manifest: dict, linux_root: Path, eda_root: Path) ->
             target="xiangshan-emu-isa",
             workload="complete rv64ui/rv64um/rv64mi manifest",
             host="eda-00",
-            cwd=f"{eda_root_s}/XiangShan",
-            command="make emu && tools/validation/run-l3-xiangshan --stage isa",
+            cwd=eda_root_s,
+            command="tools/validation/run-l3-xiangshan --stage isa --manifest baremetal/riscv-tests/isa/build/manifest.json --output build/validation/l3-xiangshan/isa/results.json",
             timeout=14400,
         ),
         Gate(

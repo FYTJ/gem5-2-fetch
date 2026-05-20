@@ -1,5 +1,7 @@
 
     .section .init;
+#include "riscv-tests/isa/rvtest_exit.h"
+
     .globl _start;
     .type _start,@function
 
@@ -12,7 +14,7 @@ _start:
   csrw mtvec, t0
 
   call main
-  ebreak
+  RVTEST_EXIT_FAIL
 
 loop:
     j loop
@@ -21,7 +23,6 @@ loop:
     .weak mtvec_handler;
     .type mtvec_handler,@function
 mtvec_handler:
-  li a0, 1
-  ebreak
+  RVTEST_EXIT_FAIL
 1:
   j 1b

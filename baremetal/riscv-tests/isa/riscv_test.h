@@ -93,13 +93,13 @@ main:
 
 #define RVTEST_CODE_END
 
+#include "rvtest_exit.h"
+
 #define RVTEST_PASS                                                     \
-        li a0, 0;                                                       \
-        ebreak;
+        RVTEST_EXIT_PASS
 
 #define RVTEST_FAIL                                                     \
-        li a0, 1;                                                       \
-        ebreak;
+        RVTEST_EXIT_FAIL
 
 #define TEST_PASSFAIL                                                   \
         j pass;                                                         \

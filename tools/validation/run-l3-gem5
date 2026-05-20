@@ -26,10 +26,14 @@ def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, 
     text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     if timed_out:
         if "Entering event queue" in text or "Starting simulation" in text:
-            return "timeout", "entered simulation but did not naturally consume a0+ebreak before timeout"
+            return "timeout", "entered simulation but did not naturally consume the selected exit protocol before timeout"
         return "timeout", "timed out before clear simulation entry"
+    if "m5_fail instruction encountered" in text:
+        return "fail", "m5_fail instruction encountered"
     if rc != 0:
         return "fail", "gem5 returned non-zero"
+    if "m5_exit instruction encountered" in text:
+        return "pass", "m5_exit instruction encountered"
     if "HIT GOOD TRAP" in text or "good trap" in text.lower():
         return "pass", "good trap"
     if "Exiting @ tick" in text or "simulate() limit reached" in text:
@@ -37,11 +41,40 @@ def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, 
     return "unsupported", "no recognized pass/fail marker"
 
 
+def artifact_for_backend(test: dict, backend: str) -> Path:
+    by_backend = test.get("artifacts_by_backend", {})
+    if backend in by_backend:
+        return Path(by_backend[backend].get("bin", ""))
+    if backend == "xiangshan":
+        return Path(test.get("artifacts", {}).get("bin", ""))
+    return Path("")
+
+
+def test_matches(test: dict, filters: set[str]) -> bool:
+    if not filters:
+        return True
+    names = {
+        test.get("id", ""),
+        test.get("name", ""),
+        f"{test.get('suite', '')}/{test.get('name', '')}",
+        f"{test.get('suite', '')}-p-{test.get('name', '')}",
+    }
+    return bool(names & filters)
+
+
 def run_one(root: Path, test: dict, output_dir: Path, timeout: int) -> dict:
     test_id = test["id"]
-    bin_path = Path(test.get("artifacts", {}).get("bin", ""))
+    backend = "gem5"
+    bin_path = artifact_for_backend(test, backend)
     if not bin_path.exists():
-        return {"id": test_id, "suite": test["suite"], "status": "blocked_missing_artifact", "reason": "missing bin artifact", "bin": str(bin_path)}
+        return {
+            "id": test_id,
+            "suite": test["suite"],
+            "backend": backend,
+            "status": "blocked_missing_artifact",
+            "reason": "missing gem5 backend bin artifact",
+            "bin": str(bin_path),
+        }
     gem5 = root / "GEM5" / "build" / "RISCV" / "gem5.opt"
     config = root / "GEM5" / "configs" / "example" / "kmhv3.py"
     if not gem5.exists() or not config.exists():
@@ -77,6 +110,7 @@ def run_one(root: Path, test: dict, output_dir: Path, timeout: int) -> dict:
     return {
         "id": test_id,
         "suite": test["suite"],
+        "backend": backend,
         "status": status,
         "reason": reason,
         "return_code": rc,
@@ -112,7 +146,21 @@ def write_payload(output: Path, payload: dict) -> None:
 def run_isa(args: argparse.Namespace) -> int:
     root = args.repo_root.resolve()
     manifest = load_manifest(args.manifest)
-    tests = manifest.get("tests", [])
+    filters = set(args.test)
+    tests = [test for test in manifest.get("tests", []) if test_matches(test, filters)]
+    if not tests:
+        payload = {
+            "schema_version": 1,
+            "layer": "l3",
+            "target": "gem5-isa-first-layer",
+            "stage": "isa",
+            "status": "blocked_missing_artifact",
+            "reason": "no manifest entries matched requested tests",
+            "summary": {"total": 0, "by_status": {}, "by_suite": {}},
+            "results": [],
+        }
+        write_payload(args.output, payload)
+        return 1
     rows = []
     for test in tests:
         rows.append(run_one(root, test, args.output.parent, args.per_test_timeout))
@@ -157,6 +205,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--per-test-timeout", type=int, default=5)
+    parser.add_argument("--test", action="append", default=[], help="test filter: name, suite/name, or manifest id")
     args = parser.parse_args(argv)
     if args.output is None:
         args.output = root / "build" / "validation" / "l3-gem5" / args.stage / "results.json"
