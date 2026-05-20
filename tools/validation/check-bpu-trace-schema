@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Validate the module-level BPU trace/transaction schema."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+REQUIRED_EVENTS = {
+    "predict_request": {"cycle", "pc", "fetch_id", "metadata_id"},
+    "predict_response": {"cycle", "pc", "fetch_id", "taken", "target", "source", "metadata_id"},
+    "resolve": {"cycle", "pc", "fetch_id", "actual_taken", "actual_target", "metadata_id"},
+    "redirect": {"cycle", "from_pc", "target", "reason", "flush_id", "metadata_id"},
+    "flush": {"cycle", "flush_id", "begin_fetch_id", "end_fetch_id", "reason"},
+    "train": {"cycle", "pc", "outcome", "metadata_id", "tables"},
+    "commit": {"cycle", "pc", "fetch_id", "metadata_id"},
+}
+
+
+SAMPLE = [
+    {"event": "predict_request", "cycle": 1, "pc": "0x80000000", "fetch_id": 10, "metadata_id": "m10"},
+    {"event": "predict_response", "cycle": 2, "pc": "0x80000000", "fetch_id": 10, "taken": False, "target": "0x80000004", "source": "base", "metadata_id": "m10", "metadata_state": "allocated"},
+    {"event": "resolve", "cycle": 8, "pc": "0x80000000", "fetch_id": 10, "actual_taken": True, "actual_target": "0x80000040", "metadata_id": "m10", "metadata_state": "resolved"},
+    {"event": "redirect", "cycle": 9, "from_pc": "0x80000004", "target": "0x80000040", "reason": "mispredict", "flush_id": "f1", "metadata_id": "m10"},
+    {"event": "flush", "cycle": 10, "flush_id": "f1", "begin_fetch_id": 11, "end_fetch_id": 14, "reason": "redirect"},
+    {"event": "train", "cycle": 12, "pc": "0x80000000", "outcome": {"taken": True, "target": "0x80000040"}, "metadata_id": "m10", "metadata_state": "trained", "tables": ["base", "tage"]},
+    {"event": "commit", "cycle": 15, "pc": "0x80000000", "fetch_id": 10, "metadata_id": "m10", "metadata_state": "committed"},
+]
+
+
+def load_events(path: Path | None, use_sample: bool) -> list[dict]:
+    if use_sample:
+        return SAMPLE
+    if path is None:
+        raise ValueError("either --sample or --input is required")
+    if path.suffix == ".jsonl":
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data["events"] if isinstance(data, dict) and "events" in data else data
+
+
+def validate(events: list[dict]) -> tuple[str, list[str]]:
+    errors: list[str] = []
+    seen = set()
+    metadata_states: dict[str, set[str]] = {}
+    for idx, event in enumerate(events):
+        etype = event.get("event")
+        if etype not in REQUIRED_EVENTS:
+            errors.append(f"event[{idx}] unknown event type: {etype}")
+            continue
+        seen.add(etype)
+        missing = REQUIRED_EVENTS[etype] - set(event)
+        if missing:
+            errors.append(f"event[{idx}] {etype} missing fields: {sorted(missing)}")
+        metadata_id = event.get("metadata_id")
+        if metadata_id is not None:
+            metadata_states.setdefault(str(metadata_id), set()).add(str(event.get("metadata_state", etype)))
+    missing_events = set(REQUIRED_EVENTS) - seen
+    if missing_events:
+        errors.append(f"missing event types: {sorted(missing_events)}")
+    if not any({"allocated", "resolved", "trained", "committed"} <= states for states in metadata_states.values()):
+        errors.append("metadata lifecycle must include allocated/resolved/trained/committed for at least one metadata_id")
+    return ("pass" if not errors else "fail"), errors
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sample", action="store_true")
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--output", type=Path, default=Path("build/validation/bpu-trace-schema/results.json"))
+    args = parser.parse_args(argv)
+
+    try:
+        events = load_events(args.input, args.sample)
+        status, errors = validate(events)
+    except Exception as exc:  # schema checker must report parse failures structurally
+        status, errors, events = "fail", [str(exc)], []
+    payload = {
+        "schema_version": 1,
+        "layer": "l2",
+        "target": "bpu-trace-schema",
+        "status": status,
+        "required_events": {key: sorted(value) for key, value in REQUIRED_EVENTS.items()},
+        "errors": errors,
+        "event_count": len(events),
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={status}")
+    print("VALIDATION_REASON=bpu trace schema")
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

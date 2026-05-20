@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  --stage)
+    stage="${2:-}"
+    shift 2
+    ;;
+  *)
+    echo "usage: run-l3 --stage <isa|medium|spec2006> [args...]" >&2
+    exit 2
+    ;;
+esac
+
+case "$stage" in
+  isa|medium|spec2006)
+    exec "$(dirname "$0")/run-l3-gem5" --stage "$stage" "$@"
+    ;;
+  *)
+    echo "unknown stage: $stage" >&2
+    exit 2
+    ;;
+esac

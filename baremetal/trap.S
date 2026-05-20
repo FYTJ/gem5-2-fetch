@@ -2,9 +2,15 @@
 #define concat(x, y) concat_temp(x, y)
 #define MAP(c, f) c(f)
 
+#if __riscv_xlen == 64
+#define LOAD  ld
+#define STORE sd
+#define XLEN  8
+#else
 #define LOAD  lw
 #define STORE sw
 #define XLEN  4
+#endif
 
 #define REGS_LO16(f) \
       f( 1)       f( 3) f( 4) f( 5) f( 6) f( 7) f( 8) f( 9) \

@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Build and run GEM5 BPU unit tests used by the L2 module gate."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+TARGETS = (
+    ("tage.test", "build/RISCV/cpu/pred/btb/test/tage.test.opt"),
+    ("mgsc.test", "build/RISCV/cpu/pred/btb/test/mgsc.test.opt"),
+    ("folded_hist.test", "build/RISCV/cpu/pred/btb/test/folded_hist.test.opt"),
+)
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def run(command: list[str], cwd: Path, log_path: Path, timeout: int) -> tuple[str, int | None, float]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            env = os.environ.copy()
+            env["PATH"] = env.get("VALIDATION_SYSTEM_PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+            completed = subprocess.run(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            rc = completed.returncode
+            return ("pass" if rc == 0 else "fail"), rc, round(time.monotonic() - start, 3)
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout}s\n")
+            return "timeout", None, round(time.monotonic() - start, 3)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", type=Path, default=repo_root())
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--jobs", default=os.environ.get("VALIDATION_JOBS", "4"))
+    parser.add_argument("--build-timeout", type=int, default=600)
+    parser.add_argument("--run-timeout", type=int, default=120)
+    args = parser.parse_args(argv)
+
+    root = args.repo_root.resolve()
+    gem5 = root / "GEM5"
+    output = args.output or (root / "build" / "validation" / "gem5-bpu" / "results.json")
+    records = []
+    overall = "pass"
+    if not gem5.is_dir():
+        overall = "blocked_missing_artifact"
+        records.append({"target": "GEM5", "status": overall, "reason": f"missing {gem5}"})
+    else:
+        for name, binary in TARGETS:
+            scons_target = binary
+            build_log = output.parent / f"{name}.build.log"
+            run_log = output.parent / f"{name}.run.log"
+            build_status, build_rc, build_time = run(
+                ["scons", scons_target, "--unit-test", f"-j{args.jobs}"],
+                gem5,
+                build_log,
+                args.build_timeout,
+            )
+            run_status = "unsupported"
+            run_rc = None
+            run_time = None
+            if build_status == "pass":
+                run_status, run_rc, run_time = run([str(gem5 / binary)], root, run_log, args.run_timeout)
+            status = run_status if build_status == "pass" else build_status
+            if status != "pass" and overall == "pass":
+                overall = status
+            records.append(
+                {
+                    "target": name,
+                    "binary": str(gem5 / binary),
+                    "status": status,
+                    "build": {"status": build_status, "return_code": build_rc, "log_path": str(build_log), "host_time": build_time},
+                    "run": {"status": run_status, "return_code": run_rc, "log_path": str(run_log), "host_time": run_time},
+                }
+            )
+
+    payload = {"schema_version": 1, "layer": "l2", "target": "gem5-bpu-unit", "status": overall, "results": records}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={overall}")
+    print(f"VALIDATION_REASON=gem5 bpu unit tests")
+    return 0 if overall == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

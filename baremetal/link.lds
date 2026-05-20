@@ -27,13 +27,31 @@ SECTIONS
   } >ram AT>ram 
 
   . = ALIGN(8);
-  PROVIDE( end = . );
+  .rodata         :
+  {
+    *(.rodata .rodata.*)
+    *(.srodata .srodata.*)
+  } >ram AT>ram
+
+  . = ALIGN(8);
   .data          :
   {
     . = ALIGN(8);
     PROVIDE( __global_pointer = . + 0x800 );
+    *(.sdata .sdata.*)
+    *(.data .data.*)
+    *(.gnu.linkonce.d.*)
     . = ALIGN(8);
   } >ram AT>ram 
+
+  .bss           :
+  {
+    *(.sbss .sbss.*)
+    *(.bss .bss.*)
+    *(COMMON)
+    . = ALIGN(8);
+    PROVIDE( end = . );
+  } >ram AT>ram
 
   .stack ORIGIN(ram) + LENGTH(ram) - __stack_size :
   {

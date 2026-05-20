@@ -2,3 +2,6 @@ dev-docs/
 XiangShan/
 GEM5/
 XiangShan-doc/
+m5out/
+build/validation/
+build/external/

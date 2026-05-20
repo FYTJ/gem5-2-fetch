@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""Prepare and probe CORE-V Wally as the L2.5 lightweight RV64 integration base."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+DEFAULT_REPO = "https://github.com/openhwgroup/cvw.git"
+DEFAULT_COMMIT = "03f16461df99ac6de077a0549693c887fa04892d"
+MATRIX_STATUSES = (
+    "direct_run",
+    "needs_wally_harness_support",
+    "needs_test_adaptation",
+    "target_unsupported",
+    "blocked_env",
+)
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def run(command: list[str], cwd: Path, log_path: Path, timeout: int = 600, env: dict[str, str] | None = None) -> tuple[str, int | None, float]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            completed = subprocess.run(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            return ("pass" if completed.returncode == 0 else "fail"), completed.returncode, round(time.monotonic() - start, 3)
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout}s\n")
+            return "timeout", None, round(time.monotonic() - start, 3)
+
+
+def prepare(root: Path, output_dir: Path, repo: str, commit: str) -> dict:
+    cvw = root / "build" / "external" / "cvw"
+    log_dir = output_dir / "logs"
+    result = {
+        "repo": repo,
+        "requested_commit": commit,
+        "checkout": str(cvw),
+        "status": "pass",
+        "reason": "prepared",
+        "commands": [],
+    }
+    if shutil.which("git") is None:
+        result.update({"status": "blocked_env", "reason": "git not found"})
+        return result
+    if not cvw.exists():
+        status, rc, elapsed = run(["git", "clone", "--depth", "1", repo, str(cvw)], root, log_dir / "clone.log", timeout=1800)
+        result["commands"].append({"name": "clone", "status": status, "return_code": rc, "host_time": elapsed, "log_path": str(log_dir / "clone.log")})
+        if status != "pass":
+            result.update({"status": "blocked_env", "reason": "git clone failed"})
+            return result
+    for lock_name in ("shallow.lock", "index.lock"):
+        lock = cvw / ".git" / lock_name
+        if lock.exists():
+            lock.unlink()
+    safe_git = ["git", "-c", f"safe.directory={cvw}"]
+    status, rc, elapsed = run([*safe_git, "fetch", "--depth", "1", "origin", commit], cvw, log_dir / "fetch.log", timeout=600)
+    result["commands"].append({"name": "fetch", "status": status, "return_code": rc, "host_time": elapsed, "log_path": str(log_dir / "fetch.log")})
+    if status == "pass":
+        status, rc, elapsed = run([*safe_git, "checkout", "--detach", commit], cvw, log_dir / "checkout.log", timeout=120)
+        result["commands"].append({"name": "checkout", "status": status, "return_code": rc, "host_time": elapsed, "log_path": str(log_dir / "checkout.log")})
+    if status != "pass":
+        result.update({"status": "blocked_env", "reason": "git checkout failed"})
+        return result
+    completed = subprocess.run([*safe_git, "rev-parse", "HEAD"], cwd=cvw, text=True, capture_output=True, check=False)
+    result["actual_commit"] = completed.stdout.strip() if completed.returncode == 0 else ""
+    result["tools"] = {name: shutil.which(name) for name in ("make", "verilator", "python3", "riscv64-unknown-elf-gcc", "riscv64-linux-gnu-gcc")}
+    return result
+
+
+def load_manifest(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def classify_test(test: dict) -> tuple[str, str]:
+    suite = test["suite"]
+    needs = set(test.get("needs", []))
+    if suite in {"rv64ui", "rv64um"}:
+        return "needs_wally_harness_support", "需要把本轮 ELF/bin 和 a0+ebreak pass/fail 协议接入 Wally testbench/runner"
+    if suite == "rv64mi":
+        if "pmp" in needs or "breakpoint" in needs or "counter" in needs:
+            return "needs_test_adaptation", "特权 CSR/PMP/debug/counter 行为需要先确认 Wally testbench 暴露和结束协议"
+        if "exception" in needs or "misaligned" in needs or "ecall" in needs:
+            return "needs_wally_harness_support", "需要 trap/exception/redirect 事件与 pass/fail 结束协议支持"
+        return "needs_wally_harness_support", "需要 M-mode CSR/trap harness 支持"
+    return "target_unsupported", f"未纳入本轮 Wally 评估 suite: {suite}"
+
+
+def support_matrix(root: Path, output_dir: Path, manifest_path: Path, prepare_result: dict) -> dict:
+    manifest = load_manifest(manifest_path)
+    rows = []
+    by_status = {status: 0 for status in MATRIX_STATUSES}
+    if prepare_result["status"] != "pass":
+        for test in manifest.get("tests", []):
+            rows.append({"id": test["id"], "suite": test["suite"], "status": "blocked_env", "reason": prepare_result["reason"], "needs": test.get("needs", [])})
+            by_status["blocked_env"] += 1
+    else:
+        for test in manifest.get("tests", []):
+            status, reason = classify_test(test)
+            rows.append({"id": test["id"], "suite": test["suite"], "status": status, "reason": reason, "needs": test.get("needs", []), "artifacts": test.get("artifacts", {})})
+            by_status[status] += 1
+    return {
+        "schema_version": 1,
+        "target": "wally-isa-matrix",
+        "manifest": str(manifest_path),
+        "summary": {"total": len(rows), "by_status": by_status},
+        "tests": rows,
+    }
+
+
+def scan_seam(root: Path) -> dict:
+    cvw = root / "build" / "external" / "cvw"
+    evidence = []
+    if cvw.is_dir():
+        for path in sorted((cvw / "src").rglob("*")) if (cvw / "src").is_dir() else []:
+            if path.is_file() and path.suffix.lower() in {".sv", ".v", ".vh"}:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                lowered = text.lower()
+                if any(token in lowered for token in ("branch", "predict", "flush", "redirect", "commit", "exception")):
+                    evidence.append(str(path.relative_to(cvw)))
+                if len(evidence) >= 40:
+                    break
+    verdict = "needs_wally_harness_support" if evidence else "blocked_env"
+    reason = "找到前端/异常/提交相关源码路径，但仍需 testbench seam 才能接入外部 XiangShan BPU wrapper" if evidence else "未能扫描 Wally src 路径"
+    return {"status": verdict, "reason": reason, "evidence_paths": evidence}
+
+
+def benchmark_attempt(root: Path, output_dir: Path, benchmark: str, prepare_result: dict) -> dict:
+    cvw = root / "build" / "external" / "cvw"
+    matches = []
+    if cvw.is_dir():
+        for path in cvw.rglob("*"):
+            name = path.name.lower()
+            if benchmark.lower() in name:
+                matches.append(str(path.relative_to(cvw)))
+                if len(matches) >= 20:
+                    break
+    status = "needs_wally_harness_support" if prepare_result["status"] == "pass" else "blocked_env"
+    reason = "发现 benchmark 相关路径，但本轮尚未找到可直接消费本仓 baremetal workload 的 Wally runner" if matches else "未找到可直接运行的 benchmark target"
+    command_result = None
+    if prepare_result["status"] != "pass":
+        reason = prepare_result["reason"]
+    elif benchmark == "coremark" and (cvw / "benchmarks" / "coremark" / "Makefile").exists():
+        env = os.environ.copy()
+        env["WALLY"] = str(cvw)
+        env["PATH"] = f"{cvw / 'bin'}:{env.get('PATH', '')}"
+        submodule_result = None
+        if not (cvw / "addins" / "coremark" / "core_main.c").exists():
+            sub_log = output_dir / "logs" / "coremark-submodule.log"
+            safe_git = ["git", "-c", f"safe.directory={cvw}"]
+            sub_status, sub_rc, sub_elapsed = run(
+                [*safe_git, "submodule", "update", "--init", "--depth", "1", "addins/coremark"],
+                cvw,
+                sub_log,
+                timeout=600,
+                env=env,
+            )
+            submodule_result = {"command": [*safe_git, "submodule", "update", "--init", "--depth", "1", "addins/coremark"], "status": sub_status, "return_code": sub_rc, "host_time": sub_elapsed, "log_path": str(sub_log)}
+        log_path = output_dir / "logs" / "coremark-run.log"
+        cmd = ["make", "-C", str(cvw / "benchmarks" / "coremark"), "run", "XLEN=64"]
+        run_status, rc, elapsed = run(cmd, cvw, log_path, timeout=300, env=env)
+        command_result = {"command": cmd, "status": run_status, "return_code": rc, "host_time": elapsed, "log_path": str(log_path), "submodule": submodule_result}
+        if run_status == "pass":
+            status = "direct_run"
+            reason = "Wally CoreMark run target completed"
+        else:
+            text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            if any(token in text for token in ("riscv64-unknown-elf-gcc", "elf2hex", "not found", "No such file")):
+                status = "blocked_env"
+                reason = "Wally CoreMark run target exists, but required baremetal toolchain/helper is missing"
+            else:
+                status = "needs_wally_harness_support"
+                reason = "Wally CoreMark run target was attempted but did not complete under current harness"
+    return {
+        "schema_version": 1,
+        "target": "wally-benchmark",
+        "benchmark": benchmark,
+        "status": status,
+        "reason": reason,
+        "evidence_paths": matches,
+        "attempt": command_result,
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prepare", action="store_true")
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--benchmark", choices=("coremark", "dhrystone"))
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--repo-root", type=Path, default=repo_root())
+    parser.add_argument("--repo", default=os.environ.get("VALIDATION_WALLY_REPO", DEFAULT_REPO))
+    parser.add_argument("--commit", default=os.environ.get("VALIDATION_WALLY_COMMIT", DEFAULT_COMMIT))
+    args = parser.parse_args(argv)
+
+    root = args.repo_root.resolve()
+    output = args.output or (root / "build" / "validation" / "wally" / "results.json")
+    output_dir = output.parent
+    prep = prepare(root, output_dir, args.repo, args.commit)
+    payload = {"schema_version": 1, "layer": "l25", "prepare": prep, "status": prep["status"]}
+    if args.manifest:
+        matrix = support_matrix(root, output_dir, args.manifest, prep)
+        payload["matrix"] = matrix
+        payload["seam"] = scan_seam(root)
+        payload["status"] = "pass" if prep["status"] == "pass" and matrix["summary"]["total"] > 0 else prep["status"]
+    if args.benchmark:
+        payload["benchmark"] = benchmark_attempt(root, output_dir, args.benchmark, prep)
+        payload["seam"] = scan_seam(root)
+        payload["status"] = "pass" if prep["status"] == "pass" else prep["status"]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={payload['status']}")
+    print("VALIDATION_REASON=wally feasibility probe")
+    return 0 if payload["status"] == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Collect the latest validation evidence into one machine-readable summary."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+
+STATUS_ENUM = (
+    "pass",
+    "fail",
+    "timeout",
+    "unsupported",
+    "blocked_missing_artifact",
+    "blocked_env",
+)
+
+HARNESS_RESULT_PATHS = (
+    "build/validation/task003-l1-riscv-tests/results.json",
+    "build/validation/task003-l1-gem5-entry/results.json",
+    "build/validation/task003-xs-compile/results.json",
+    "build/validation/task003-xs-bpu-scalatest/results.json",
+    "build/validation/task004-wally-prepare/results.json",
+    "build/validation/task003-gem5-bpu/results.json",
+    "build/validation/task003-schema-harness/results.json",
+    "build/validation/task004-wally-matrix/results.json",
+    "build/validation/task004-wally-benchmark/results.json",
+    "build/validation/task005-gem5-isa/results.json",
+    "build/validation/task005-gem5-medium/results.json",
+)
+
+DETAIL_RESULT_PATHS = {
+    "manifest": "baremetal/riscv-tests/isa/build/manifest.json",
+    "gem5_bpu": "build/validation/gem5-bpu/results.json",
+    "bpu_trace_schema": "build/validation/bpu-trace-schema/results.json",
+    "xiangshan_compile": "build/validation/xiangshan-linux-compile/results.json",
+    "xiangshan_bpu_scalatest": "build/validation/xiangshan-linux-bpu-scalatest/results.json",
+    "wally_prepare": "build/validation/wally-prepare/results.json",
+    "wally_isa_matrix": "build/validation/wally-isa-matrix/results.json",
+    "wally_benchmark": "build/validation/wally-benchmark/results.json",
+    "gem5_l3_isa": "build/validation/l3-gem5/isa/results.json",
+    "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
+    "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
+    "xiangshan_l3_local_blocker": "build/validation/task005-xs-local-blocker/results.json",
+}
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def load_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def summarize_statuses(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = Counter(row.get("status", "missing") for row in rows)
+    return {status: counts.get(status, 0) for status in (*STATUS_ENUM, "missing")}
+
+
+def flatten_harness_results(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for rel in HARNESS_RESULT_PATHS:
+        payload = load_json(root / rel)
+        if payload is None:
+            rows.append({"source": rel, "status": "missing"})
+            continue
+        for result in payload.get("results", []):
+            rows.append(
+                {
+                    "source": rel,
+                    "layer": result.get("layer"),
+                    "target": result.get("target"),
+                    "workload": result.get("workload"),
+                    "host": result.get("host"),
+                    "status": result.get("status"),
+                    "return_code": result.get("return_code"),
+                    "exit_reason": result.get("exit_reason"),
+                    "log_path": result.get("log_path"),
+                    "stats_path": result.get("stats_path"),
+                    "simInsts": result.get("simInsts"),
+                    "instrCnt": result.get("instrCnt"),
+                    "cycles": result.get("cycles"),
+                    "IPC": result.get("IPC"),
+                    "host_time": result.get("host_time"),
+                }
+            )
+    return rows
+
+
+def load_details(root: Path) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    for name, rel in DETAIL_RESULT_PATHS.items():
+        details[name] = load_json(root / rel) or {"status": "missing", "path": rel}
+    return details
+
+
+def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) -> dict[str, Any]:
+    rows = []
+    for row in gates:
+        fields = {name: row.get(name) for name in ("simInsts", "instrCnt", "cycles", "IPC", "host_time", "stats_path")}
+        if any(value is not None for value in fields.values()):
+            rows.append({"target": row.get("target"), "host": row.get("host"), **fields})
+    l3_results = details.get("gem5_l3_isa", {}).get("results", [])
+    stats_files = sum(1 for row in l3_results if row.get("stats_path"))
+    return {
+        "harness_rows_with_perf_fields": rows,
+        "gem5_l3_stats_files": stats_files,
+        "note": "performance fields are only authoritative after correctness gates pass; current medium and SPEC gates are not performance runs",
+    }
+
+
+def build_summary(root: Path) -> dict[str, Any]:
+    details = load_details(root)
+    gates = flatten_harness_results(root)
+    manifest_summary = details.get("manifest", {}).get("summary", {})
+    wally_matrix = details.get("wally_isa_matrix", {}).get("matrix", {}).get("summary", {})
+    wally_benchmark = details.get("wally_benchmark", {}).get("benchmark", {})
+    gem5_l3_isa = details.get("gem5_l3_isa", {})
+    payload = {
+        "schema_version": 1,
+        "status_enum": STATUS_ENUM,
+        "manifest_summary": manifest_summary,
+        "gate_summary": summarize_statuses(gates),
+        "gates": gates,
+        "detail_summary": {
+            "gem5_bpu_status": details.get("gem5_bpu", {}).get("status"),
+            "bpu_trace_schema_status": details.get("bpu_trace_schema", {}).get("status"),
+            "xiangshan_linux_compile_status": details.get("xiangshan_compile", {}).get("status"),
+            "xiangshan_linux_bpu_scalatest_status": details.get("xiangshan_bpu_scalatest", {}).get("status"),
+            "wally_prepare_status": details.get("wally_prepare", {}).get("status"),
+            "wally_matrix_summary": wally_matrix,
+            "wally_benchmark_status": wally_benchmark.get("status"),
+            "gem5_l3_isa_status": gem5_l3_isa.get("status"),
+            "gem5_l3_isa_summary": gem5_l3_isa.get("summary"),
+            "gem5_l3_medium_status": details.get("gem5_l3_medium", {}).get("status"),
+            "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),
+            "xiangshan_l3_status": details.get("xiangshan_l3_local_blocker", {}).get("status"),
+        },
+        "performance_summary": performance_summary(gates, details),
+    }
+    return payload
+
+
+def write_markdown(path: Path, payload: dict[str, Any]) -> None:
+    lines = [
+        "# Validation Evidence Summary",
+        "",
+        "## Gate Summary",
+        "",
+        "| status | count |",
+        "|---|---:|",
+    ]
+    for status, count in payload["gate_summary"].items():
+        lines.append(f"| {status} | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Harness Gates",
+            "",
+            "| layer | target | host | status | reason |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for row in payload["gates"]:
+        reason = str(row.get("exit_reason") or "").replace("|", "/")
+        lines.append(f"| {row.get('layer', '')} | {row.get('target', '')} | {row.get('host', '')} | {row.get('status', '')} | {reason} |")
+    lines.extend(
+        [
+            "",
+            "## Detail Summary",
+            "",
+            "```json",
+            json.dumps(payload["detail_summary"], indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
+            "",
+            "## Performance Summary",
+            "",
+            "```json",
+            json.dumps(payload["performance_summary"], indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
+        ]
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", type=Path, default=repo_root())
+    parser.add_argument("--output", type=Path, default=repo_root() / "build" / "validation" / "final-summary.json")
+    parser.add_argument("--markdown", type=Path, default=repo_root() / "build" / "validation" / "final-summary.md")
+    args = parser.parse_args()
+
+    payload = build_summary(args.repo_root.resolve())
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    write_markdown(args.markdown, payload)
+    print(f"summary={args.output}")
+    print(f"markdown={args.markdown}")
+    print(json.dumps(payload["gate_summary"], indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

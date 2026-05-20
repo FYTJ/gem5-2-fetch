@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Run staged GEM5 full-system gates for the RV64 manifest and heavier workloads."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def load_manifest(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, str]:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    if timed_out:
+        if "Entering event queue" in text or "Starting simulation" in text:
+            return "timeout", "entered simulation but did not naturally consume a0+ebreak before timeout"
+        return "timeout", "timed out before clear simulation entry"
+    if rc != 0:
+        return "fail", "gem5 returned non-zero"
+    if "HIT GOOD TRAP" in text or "good trap" in text.lower():
+        return "pass", "good trap"
+    if "Exiting @ tick" in text or "simulate() limit reached" in text:
+        return "unsupported", "gem5 exited without recognized riscv-tests pass/fail protocol"
+    return "unsupported", "no recognized pass/fail marker"
+
+
+def run_one(root: Path, test: dict, output_dir: Path, timeout: int) -> dict:
+    test_id = test["id"]
+    bin_path = Path(test.get("artifacts", {}).get("bin", ""))
+    if not bin_path.exists():
+        return {"id": test_id, "suite": test["suite"], "status": "blocked_missing_artifact", "reason": "missing bin artifact", "bin": str(bin_path)}
+    gem5 = root / "GEM5" / "build" / "RISCV" / "gem5.opt"
+    config = root / "GEM5" / "configs" / "example" / "kmhv3.py"
+    if not gem5.exists() or not config.exists():
+        return {"id": test_id, "suite": test["suite"], "status": "blocked_missing_artifact", "reason": "missing gem5 binary or kmhv3.py", "bin": str(bin_path)}
+    outdir = output_dir / "m5out" / test_id
+    log_path = output_dir / "logs" / f"{test_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(gem5),
+        "-d",
+        str(outdir),
+        str(config),
+        "--mem-type",
+        "DDR4_2400_8x8",
+        "--disable-difftest",
+        "--raw-cpt",
+        f"--generic-rv-cpt={bin_path}",
+    ]
+    start = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            completed = subprocess.run(command, cwd=root, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            rc = completed.returncode
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout}s\n")
+            rc = None
+            timed_out = True
+    status, reason = classify_log(log_path, rc, timed_out)
+    stats = outdir / "stats.txt"
+    return {
+        "id": test_id,
+        "suite": test["suite"],
+        "status": status,
+        "reason": reason,
+        "return_code": rc,
+        "command": command,
+        "bin": str(bin_path),
+        "log_path": str(log_path),
+        "stats_path": str(stats) if stats.exists() else None,
+        "host_time": round(time.monotonic() - start, 3),
+    }
+
+
+def summarize(rows: list[dict]) -> dict:
+    by_status = {status: 0 for status in STATUS_ENUM}
+    by_suite: dict[str, dict[str, int]] = {}
+    for row in rows:
+        status = row["status"]
+        by_status[status] = by_status.get(status, 0) + 1
+        suite = row.get("suite", "unknown")
+        by_suite.setdefault(suite, {s: 0 for s in STATUS_ENUM})
+        by_suite[suite][status] = by_suite[suite].get(status, 0) + 1
+    return {"total": len(rows), "by_status": by_status, "by_suite": by_suite}
+
+
+def write_payload(output: Path, payload: dict) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload["summary"], indent=2, sort_keys=True))
+    print(f"results={output}")
+    print(f"VALIDATION_STATUS={payload['status']}")
+    print(f"VALIDATION_REASON={payload['reason']}")
+
+
+def run_isa(args: argparse.Namespace) -> int:
+    root = args.repo_root.resolve()
+    manifest = load_manifest(args.manifest)
+    tests = manifest.get("tests", [])
+    rows = []
+    for test in tests:
+        rows.append(run_one(root, test, args.output.parent, args.per_test_timeout))
+    summary = summarize(rows)
+    all_pass = summary["by_status"].get("pass", 0) == summary["total"]
+    payload = {
+        "schema_version": 1,
+        "layer": "l3",
+        "target": "gem5-isa-first-layer",
+        "stage": "isa",
+        "status": "pass" if all_pass else "fail",
+        "reason": "all manifest entries passed" if all_pass else "simple ISA gate did not fully pass; heavier gates must not run",
+        "summary": summary,
+        "results": rows,
+    }
+    write_payload(args.output, payload)
+    return 0 if all_pass else 1
+
+
+def run_blocked_stage(args: argparse.Namespace, stage: str) -> int:
+    reason = "blocked until complete ISA first layer passes" if stage == "medium" else "SPEC2006 checkpoint manifest is not provided"
+    status = "unsupported" if stage == "medium" else "blocked_missing_artifact"
+    payload = {
+        "schema_version": 1,
+        "layer": "l3",
+        "target": f"gem5-{stage}",
+        "stage": stage,
+        "status": status,
+        "reason": reason,
+        "summary": {"total": 1, "by_status": {status: 1}, "by_suite": {}},
+        "results": [{"id": stage, "status": status, "reason": reason}],
+    }
+    write_payload(args.output, payload)
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", choices=("isa", "medium", "spec2006"), required=True)
+    parser.add_argument("--manifest", type=Path, default=root / "baremetal" / "riscv-tests" / "isa" / "build" / "manifest.json")
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--repo-root", type=Path, default=root)
+    parser.add_argument("--per-test-timeout", type=int, default=5)
+    args = parser.parse_args(argv)
+    if args.output is None:
+        args.output = root / "build" / "validation" / "l3-gem5" / args.stage / "results.json"
+    if args.stage == "isa":
+        return run_isa(args)
+    return run_blocked_stage(args, args.stage)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

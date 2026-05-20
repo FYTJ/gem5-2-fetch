@@ -1,18 +1,21 @@
-RISCV_ARCH := rv32imab
-RISCV_ABI := ilp32
-RISCV_MCMODEL := medlow
+RISCV_ARCH ?= rv64ima_zicsr_zifencei
+RISCV_ABI ?= lp64
+RISCV_MCMODEL ?= medany
 CFLAGS += -O0 
 
-RISCV_PATH := /opt/riscv32/bin/riscv32-unknown-elf-
+RISCV_PREFIX ?= riscv64-unknown-elf-
+ifeq (, $(shell command -v $(RISCV_PREFIX)gcc 2>/dev/null))
+RISCV_PREFIX := riscv64-linux-gnu-
+endif
 
-RISCV_GCC     := $(abspath $(RISCV_PATH)gcc)
-RISCV_AS      := $(abspath $(RISCV_PATH)as)
-RISCV_GXX     := $(abspath $(RISCV_PATH)g++)
-RISCV_OBJDUMP := $(abspath $(RISCV_PATH)objdump)
-RISCV_GDB     := $(abspath $(RISCV_PATH)gdb)
-RISCV_AR      := $(abspath $(RISCV_PATH)ar)
-RISCV_OBJCOPY := $(abspath $(RISCV_PATH)objcopy)
-RISCV_READELF := $(abspath $(RISCV_PATH)readelf)
+RISCV_GCC     ?= $(RISCV_PREFIX)gcc
+RISCV_AS      ?= $(RISCV_PREFIX)as
+RISCV_GXX     ?= $(RISCV_PREFIX)g++
+RISCV_OBJDUMP ?= $(RISCV_PREFIX)objdump
+RISCV_GDB     ?= $(RISCV_PREFIX)gdb
+RISCV_AR      ?= $(RISCV_PREFIX)ar
+RISCV_OBJCOPY ?= $(RISCV_PREFIX)objcopy
+RISCV_READELF ?= $(RISCV_PREFIX)readelf
 
 .PHONY: all clean
 
@@ -49,7 +52,7 @@ CLEAN_DIRS += $(BUILD_DIR)
 
 CFLAGS += -march=$(RISCV_ARCH)
 CFLAGS += -mabi=$(RISCV_ABI)
-CFLAGS += -mcmodel=$(RISCV_MCMODEL)  -O2 --specs=nosys.specs  -gdwarf
+CFLAGS += -mcmodel=$(RISCV_MCMODEL)  -O2 -ffreestanding -gdwarf
 
 all: $(ELF)
 	cp $(BINARY) $(MEMORY_BIN)
@@ -71,5 +74,4 @@ $(BUILD_DIR)/%.o: %.c
 
 clean:
 	rm -rf $(CLEAN_DIRS)
-
 

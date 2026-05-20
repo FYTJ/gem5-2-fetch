@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "required_event_types": [
+    "predict_request",
+    "predict_response",
+    "resolve",
+    "redirect",
+    "flush",
+    "train",
+    "commit"
+  ],
+  "metadata_lifecycle": [
+    "allocated",
+    "resolved",
+    "trained",
+    "committed",
+    "flushed"
+  ],
+  "description": "模块级 BPU trace/transaction schema，只验证事件结构和 metadata 生命周期可观测性，不判断分支预测语义是否正确。"
+}

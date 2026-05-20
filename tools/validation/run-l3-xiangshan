@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Record XiangShan L3 gate status; actual emu/difftest must run on eda-00."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import socket
+import sys
+from pathlib import Path
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", choices=("isa", "medium", "spec2006"), required=True)
+    parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "l3-xiangshan" / "results.json")
+    args = parser.parse_args(argv)
+    host = socket.gethostname()
+    on_eda = host == "eda-00" or "eda-00" in host
+    status = "unsupported" if on_eda else "blocked_env"
+    reason = "emu runner placeholder reached eda-00 but build command is not wired in this local invocation" if on_eda else "XiangShan full-system emu/difftest must run on q2 eda-00, not on this host"
+    payload = {
+        "schema_version": 1,
+        "layer": "l3",
+        "target": "xiangshan-emu",
+        "stage": args.stage,
+        "host": host,
+        "status": status,
+        "reason": reason,
+        "summary": {"total": 1, "by_status": {status: 1}},
+        "results": [{"stage": args.stage, "status": status, "reason": reason}],
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={status}")
+    print(f"VALIDATION_REASON={reason}")
+    return 0 if status in {"unsupported", "blocked_env"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
