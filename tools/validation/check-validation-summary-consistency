@@ -100,6 +100,85 @@ def check_non_pass_stats_are_debug_only(collector) -> None:
         assert perf["debug_artifacts"], perf
 
 
+def check_pass_without_metrics_is_not_performance_valid(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root, "build/validation/task004-wally-benchmark/results.json", harness_result("pass"))
+        write_json(root, "build/validation/wally-benchmark/results.json", {"benchmark": {"status": "direct_run"}})
+        payload = collector.build_summary(root)
+        perf = payload["performance_summary"]
+        assert perf["performance_valid"] is False, perf
+        assert perf["valid_rows"] == [], perf
+        assert "no correctness-pass workload" in perf["invalid_reason"], perf
+
+
+def check_spec2006_missing_artifact_contract(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        contract = {
+            "schema_version": 1,
+            "recommended_path": "build/validation/spec2006-checkpoints/manifest.json",
+            "required_top_level_fields": ["schema_version", "benchmarks"],
+            "required_benchmark_fields": ["id", "benchmark", "checkpoint", "workload", "expected_exit"],
+            "minimal_example": {
+                "schema_version": 1,
+                "benchmarks": [
+                    {
+                        "id": "400.perlbench-ref-0",
+                        "benchmark": "400.perlbench",
+                        "checkpoint": "/abs/path/or/repo-relative/spec2006/400.perlbench/checkpoint",
+                        "workload": "ref",
+                        "expected_exit": "m5_exit",
+                    }
+                ],
+            },
+        }
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006/results.json",
+            {
+                "status": "blocked_missing_artifact",
+                "reason": "SPEC2006 checkpoint manifest is not provided",
+                "missing_artifact": {
+                    "kind": "SPEC2006 checkpoint manifest",
+                    "recommended_path": "build/validation/spec2006-checkpoints/manifest.json",
+                },
+                "manifest_contract": contract,
+            },
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["gem5_l3_spec2006_status"] == "blocked_missing_artifact", detail
+        assert detail["gem5_l3_spec2006_manifest_contract"] == contract, detail
+        gate = next(row for row in payload["gates"] if row["target"] == "spec2006-checkpoint")
+        assert gate["effective_status"] == "blocked_missing_artifact", gate
+
+
+def check_medium_missing_artifact_is_not_unsupported(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        missing = {
+            "kind": "GEM5 medium workload manifest",
+            "recommended_path": "build/validation/medium-workloads/manifest.json",
+            "expected_workloads": ["coremark", "dhrystone", "microbench"],
+        }
+        write_json(
+            root,
+            "build/validation/l3-gem5/medium/results.json",
+            {
+                "status": "blocked_missing_artifact",
+                "reason": "GEM5 medium workload manifest is not provided",
+                "missing_artifact": missing,
+            },
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["gem5_l3_medium_status"] == "blocked_missing_artifact", detail
+        assert detail["gem5_l3_medium_missing_artifact"] == missing, detail
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-medium")
+        assert gate["effective_status"] == "blocked_missing_artifact", gate
+
+
 def check_eda00_smoke_overrides_local_guard(collector) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -127,6 +206,9 @@ def main() -> int:
         check_blocked_detail_overrides_pass,
         check_direct_run_passes,
         check_non_pass_stats_are_debug_only,
+        check_pass_without_metrics_is_not_performance_valid,
+        check_spec2006_missing_artifact_contract,
+        check_medium_missing_artifact_is_not_unsupported,
         check_eda00_smoke_overrides_local_guard,
     ]
     for check in checks:

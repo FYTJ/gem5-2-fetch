@@ -100,6 +100,23 @@ def toolchain_env(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def prepend_existing_paths(env: dict[str, str], paths: list[Path]) -> dict[str, str]:
+    existing = [str(path) for path in paths if path.is_dir()]
+    if existing:
+        env["PATH"] = ":".join(existing + [env.get("PATH", "")])
+    return env
+
+
+def wally_manifest_env(cvw: Path) -> dict[str, str]:
+    env = toolchain_env()
+    env["WALLY"] = str(cvw)
+    prepend_existing_paths(env, [Path("/home/linuxbrew/.linuxbrew/bin")])
+    cvw_bin = cvw / "bin"
+    if cvw_bin.is_dir():
+        env["PATH"] = ":".join([env.get("PATH", ""), str(cvw_bin)])
+    return env
+
+
 def toolchain_diagnostics(env: dict[str, str] | None = None) -> dict:
     check_env = toolchain_env(env)
     path = check_env.get("PATH", "")
@@ -213,6 +230,124 @@ def support_matrix(root: Path, output_dir: Path, manifest_path: Path, prepare_re
     }
 
 
+def artifact_path(root: Path, raw: str) -> Path:
+    path = Path(raw)
+    if path.exists():
+        return path
+    marker = "baremetal/"
+    if marker in raw:
+        return root / marker.rstrip("/") / raw.split(marker, 1)[1]
+    return path
+
+
+def manifest_test_by_id(manifest: dict, test_id: str) -> dict | None:
+    for test in manifest.get("tests", []):
+        if test.get("id") == test_id or f"{test.get('suite')}/{test.get('name')}" == test_id:
+            return test
+    return None
+
+
+def ensure_manifest_submodules(cvw: Path, output_dir: Path, env: dict[str, str]) -> list[dict]:
+    commands = []
+    verilog_ethernet = cvw / "addins" / "verilog-ethernet"
+    has_sources = any(verilog_ethernet.glob("*/*.sv")) or any(verilog_ethernet.glob("*/*/*/*.sv"))
+    if not has_sources:
+        log = output_dir / "logs" / "manifest-verilog-ethernet-submodule.log"
+        safe_git = ["git", "-c", f"safe.directory={cvw}"]
+        status, rc, elapsed = run(
+            [*safe_git, "submodule", "update", "--init", "--depth", "1", "addins/verilog-ethernet"],
+            cvw,
+            log,
+            timeout=600,
+            env=env,
+        )
+        commands.append({"name": "verilog-ethernet-submodule", "command": [*safe_git, "submodule", "update", "--init", "--depth", "1", "addins/verilog-ethernet"], "status": status, "return_code": rc, "host_time": elapsed, "log_path": str(log)})
+    return commands
+
+
+def classify_manifest_attempt_log(log_path: Path, run_status: str, return_code: int | None) -> tuple[str, str]:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    if run_status == "timeout":
+        return "timeout", "Wally manifest ELF attempt timed out"
+    if "SUCCESS! All tests ran without failures." in text:
+        return "direct_run", "Wally wsim completed and reported all tests passed"
+    if "Single Elf file tests are not signatured verified." in text:
+        return "direct_run", "Wally wsim executed the external ELF; single-ELF mode has no signature verification"
+    if "Cannot find file containing module" in text and "addins/verilog-ethernet" in text:
+        return "needs_wally_harness_support", "Wally Verilator compile requires addins/verilog-ethernet submodule before external ELF can run"
+    if "%Error: Exiting due to" in text and "warning(s)" in text:
+        return "needs_wally_harness_support", "Wally Verilator compile fails because current Verilator treats Wally warnings as fatal; sim/verilator/Makefile needs a compatible warning policy or Verilator version"
+    if "Error: Could not open file" in text or ".memfile" in text and "No such file" in text:
+        return "needs_wally_harness_support", "external ELF path requires .memfile/.objdump.addr/.objdump.lab sidecars generated through Wally testbench/Makefile"
+    if return_code not in (0, None):
+        return "fail", "Wally manifest ELF attempt returned non-zero"
+    return "needs_wally_harness_support", "Wally wsim did not emit a recognized pass marker for the external ELF attempt"
+
+
+def manifest_attempt(root: Path, output_dir: Path, manifest_path: Path, prepare_result: dict, test_id: str, timeout: int) -> dict:
+    cvw = root / "build" / "external" / "cvw"
+    manifest = load_manifest(manifest_path)
+    test = manifest_test_by_id(manifest, test_id)
+    seams = [
+        {"file": "bin/wsim", "evidence": "accepts a testsuite path ending in .elf or --elf and passes +ElfFile to the simulator"},
+        {"file": "testbench/testbench.sv", "evidence": "external ElfFile mode loads ElfFile.memfile plus ElfFile.objdump.addr/lab, and explicitly says single ELF tests are not signature verified"},
+        {"file": "testbench/Makefile", "evidence": "generates .memfile, .objdump.addr and .objdump.lab from an ELF"},
+        {"file": "sim/verilator/Makefile", "evidence": "compiles the Verilator testbench and pulls addins/verilog-ethernet sources; warning policy is currently not externally parameterized by wsim"},
+    ]
+    if prepare_result["status"] != "pass":
+        return {"status": "blocked_env", "reason": prepare_result["reason"], "test_id": test_id, "seams": seams}
+    if test is None:
+        return {"status": "blocked_missing_artifact", "reason": f"manifest test not found: {test_id}", "test_id": test_id, "seams": seams}
+    raw_elf = test.get("artifacts_by_backend", {}).get("xiangshan", {}).get("elf") or test.get("artifacts", {}).get("elf")
+    if not raw_elf:
+        return {"status": "blocked_missing_artifact", "reason": "manifest entry lacks a XiangShan/default ELF artifact", "test_id": test_id, "test": test, "seams": seams}
+    elf = artifact_path(root, raw_elf)
+    if not elf.exists():
+        return {"status": "blocked_missing_artifact", "reason": "manifest ELF artifact is missing", "test_id": test_id, "elf": str(elf), "test": test, "seams": seams}
+    env = wally_manifest_env(cvw)
+    prep_commands = ensure_manifest_submodules(cvw, output_dir, env)
+    log_path = output_dir / "logs" / f"manifest-attempt-{test['id']}.log"
+    command = [
+        sys.executable,
+        str(cvw / "bin" / "wsim"),
+        "rv64gc",
+        str(elf),
+        "--sim",
+        "verilator",
+        "--args",
+        "+INSTR_LIMIT=200000",
+    ]
+    run_status, rc, elapsed = run(command, root, log_path, timeout=timeout, env=env)
+    status, reason = classify_manifest_attempt_log(log_path, run_status, rc)
+    return {
+        "schema_version": 1,
+        "target": "wally-manifest-single-elf",
+        "status": status,
+        "reason": reason,
+        "test_id": test["id"],
+        "suite": test["suite"],
+        "name": test["name"],
+        "elf": str(elf),
+        "sidecars": {
+            "memfile": str(elf) + ".memfile",
+            "objdump_addr": str(elf) + ".objdump.addr",
+            "objdump_lab": str(elf) + ".objdump.lab",
+        },
+        "command": command,
+        "return_code": rc,
+        "runner_status": run_status,
+        "host_time": elapsed,
+        "log_path": str(log_path),
+        "prepare_commands": prep_commands,
+        "toolchain": toolchain_diagnostics(env),
+        "runtime_tools": {
+            tool: shutil.which(tool, path=env.get("PATH", ""))
+            for tool in ("python3", "make", "verilator", "elf2hex", "extractFunctionRadix.sh", "uv")
+        },
+        "seams": seams,
+    }
+
+
 def scan_seam(root: Path) -> dict:
     cvw = root / "build" / "external" / "cvw"
     evidence = []
@@ -313,6 +448,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo-root", type=Path, default=repo_root())
     parser.add_argument("--repo", default=os.environ.get("VALIDATION_WALLY_REPO", DEFAULT_REPO))
     parser.add_argument("--commit", default=os.environ.get("VALIDATION_WALLY_COMMIT", DEFAULT_COMMIT))
+    parser.add_argument("--attempt-test", default=os.environ.get("VALIDATION_WALLY_ATTEMPT_TEST", "rv64ui-p-add"))
+    parser.add_argument("--attempt-timeout", type=int, default=int(os.environ.get("VALIDATION_WALLY_ATTEMPT_TIMEOUT", "600")))
     args = parser.parse_args(argv)
 
     root = args.repo_root.resolve()
@@ -324,6 +461,7 @@ def main(argv: list[str]) -> int:
         matrix = support_matrix(root, output_dir, args.manifest, prep)
         payload["matrix"] = matrix
         payload["seam"] = scan_seam(root)
+        payload["manifest_attempt"] = manifest_attempt(root, output_dir, args.manifest, prep, args.attempt_test, args.attempt_timeout)
         payload["status"] = "pass" if prep["status"] == "pass" and matrix["summary"]["total"] > 0 else prep["status"]
     if args.benchmark:
         payload["benchmark"] = benchmark_attempt(root, output_dir, args.benchmark, prep)

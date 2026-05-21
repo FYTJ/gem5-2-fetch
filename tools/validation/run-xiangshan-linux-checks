@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,19 +18,49 @@ TEST_CLASSES = (
     "xiangshan.frontend.bpu.SignedSaturateCounterTest",
 )
 
+KNOWN_EXTRA_PATHS = (
+    "/home/linuxbrew/.linuxbrew/bin",
+    "/home/zhuyanbo/circt/build/bin",
+)
+
 
 def repo_root_from_xiangshan() -> Path:
     cwd = Path.cwd().resolve()
     return cwd.parent if cwd.name == "XiangShan" else cwd
 
 
-def run(command: list[str], cwd: Path, log_path: Path, timeout: int) -> tuple[str, int | None, float]:
+def validation_env() -> tuple[dict[str, str], dict]:
+    env = os.environ.copy()
+    configured = env.get("VALIDATION_XIANGSHAN_EXTRA_PATHS", "")
+    candidates = [item for item in configured.split(":") if item]
+    candidates.extend(KNOWN_EXTRA_PATHS)
+    extra_paths = []
+    for raw in candidates:
+        path = Path(raw)
+        if path.is_dir() and raw not in extra_paths:
+            extra_paths.append(raw)
+    env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
+    diagnostics = {
+        "extra_paths": extra_paths,
+        "tools": {
+            tool: shutil.which(tool, path=env["PATH"])
+            for tool in ("java", "mill", "verilator", "firtool")
+        },
+    }
+    firtool = diagnostics["tools"].get("firtool")
+    if firtool and not env.get("CHISEL_FIRTOOL_PATH"):
+        env["CHISEL_FIRTOOL_PATH"] = str(Path(firtool).parent)
+    diagnostics["CHISEL_FIRTOOL_PATH"] = env.get("CHISEL_FIRTOOL_PATH")
+    return env, diagnostics
+
+
+def run(command: list[str], cwd: Path, log_path: Path, timeout: int, env: dict[str, str] | None = None) -> tuple[str, int | None, float]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     with log_path.open("w", encoding="utf-8") as log:
         log.write("$ " + " ".join(command) + "\n\n")
         try:
-            completed = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            completed = subprocess.run(command, cwd=cwd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False, env=env)
             rc = completed.returncode
             return ("pass" if rc == 0 else "fail"), rc, round(time.monotonic() - start, 3)
         except subprocess.TimeoutExpired:
@@ -37,45 +68,118 @@ def run(command: list[str], cwd: Path, log_path: Path, timeout: int) -> tuple[st
             return "timeout", None, round(time.monotonic() - start, 3)
 
 
+def should_use_local_copy(xiangshan: Path, no_local_copy: bool) -> bool:
+    if no_local_copy or os.environ.get("VALIDATION_XIANGSHAN_LOCAL_COPY") == "0":
+        return False
+    return "/mnt/hgfs/" in str(xiangshan)
+
+
+def prepare_local_copy(root: Path, xiangshan: Path, output_dir: Path, timeout: int, local_copy_root: Path) -> tuple[Path, dict]:
+    local_xiangshan = local_copy_root / "XiangShan"
+    result = {
+        "mode": "local_copy",
+        "source": str(xiangshan),
+        "workspace": str(local_xiangshan),
+        "status": "pass",
+        "reason": "prepared Linux-local XiangShan workspace",
+        "commands": [],
+    }
+    if shutil.which("rsync") is None:
+        result.update({"status": "blocked_env", "reason": "rsync not found; cannot avoid case-insensitive shared filesystem compile collision"})
+        return local_xiangshan, result
+    local_xiangshan.parent.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / "rsync-local-copy.log"
+    command = [
+        "rsync",
+        "-a",
+        "--delete",
+        "--exclude=out",
+        "--exclude=build",
+        f"{xiangshan}/",
+        f"{local_xiangshan}/",
+    ]
+    status, rc, elapsed = run(command, root, log_path, timeout)
+    result["commands"].append({"name": "rsync-local-copy", "command": command, "status": status, "return_code": rc, "host_time": elapsed, "log_path": str(log_path)})
+    if status != "pass":
+        result.update({"status": status, "reason": "failed to prepare Linux-local XiangShan workspace"})
+    return local_xiangshan, result
+
+
+def expose_local_copy_tools(workspace: Path, env_diagnostics: dict, prepare_result: dict) -> None:
+    if prepare_result.get("mode") != "local_copy" or prepare_result.get("status") != "pass":
+        return
+    resources = workspace / "src" / "main" / "resources"
+    if not resources.is_dir():
+        prepare_result["commands"].append({"name": "expose-verilator", "status": "blocked_missing_artifact", "reason": f"missing {resources}"})
+        return
+    verilator = env_diagnostics.get("tools", {}).get("verilator")
+    if not verilator:
+        prepare_result["commands"].append({"name": "expose-verilator", "status": "blocked_env", "reason": "verilator not found"})
+        return
+    link = resources / "verilator"
+    if link.exists() or link.is_symlink():
+        if link.is_symlink():
+            link.unlink()
+        else:
+            prepare_result["commands"].append({"name": "expose-verilator", "status": "blocked_env", "reason": f"{link} exists and is not a symlink"})
+            return
+    link.symlink_to(verilator)
+    prepare_result["commands"].append({"name": "expose-verilator", "status": "pass", "source": verilator, "link": str(link)})
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("compile", "bpu-scalatest"), required=True)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--no-local-copy", action="store_true", help="compile directly in the shared checkout")
+    parser.add_argument("--local-copy-root", type=Path, default=Path(os.environ.get("VALIDATION_XIANGSHAN_LOCAL_COPY_ROOT", "/tmp/module-deletion-test-XiangShan")))
     args = parser.parse_args(argv)
 
     root = repo_root_from_xiangshan()
     xiangshan = root / "XiangShan"
     output = args.output or (root / "build" / "validation" / f"xiangshan-linux-{args.mode}" / "results.json")
+    output_dir = output.parent
     records = []
     status = "pass"
     reason = args.mode
+    env, env_diagnostics = validation_env()
+    prepare_result = {"mode": "shared_checkout", "workspace": str(xiangshan), "status": "pass", "reason": "using source checkout directly"}
 
     if not xiangshan.is_dir():
         status = "blocked_missing_artifact"
         reason = f"missing {xiangshan}"
-    elif shutil.which("mill") is None:
+    elif env_diagnostics["tools"]["mill"] is None:
         status = "blocked_env"
         reason = "mill not found on linux host"
-    elif shutil.which("java") is None:
+    elif env_diagnostics["tools"]["java"] is None:
         status = "blocked_env"
         reason = "java not found on linux host"
     else:
+        work_xiangshan = xiangshan
+        if should_use_local_copy(xiangshan, args.no_local_copy):
+            work_xiangshan, prepare_result = prepare_local_copy(root, xiangshan, output_dir, args.timeout, args.local_copy_root)
+            if prepare_result["status"] != "pass":
+                status = prepare_result["status"]
+                reason = prepare_result["reason"]
+            expose_local_copy_tools(work_xiangshan, env_diagnostics, prepare_result)
         if args.mode == "compile":
             command = ["mill", "-i", "xiangshan.compile"]
             log = output.parent / "xiangshan.compile.log"
-            status, rc, elapsed = run(command, xiangshan, log, args.timeout)
-            records.append({"name": "xiangshan.compile", "command": command, "status": status, "return_code": rc, "log_path": str(log), "host_time": elapsed})
+            if status == "pass":
+                status, rc, elapsed = run(command, work_xiangshan, log, args.timeout, env)
+                records.append({"name": "xiangshan.compile", "command": command, "status": status, "return_code": rc, "log_path": str(log), "host_time": elapsed, "cwd": str(work_xiangshan)})
         else:
-            for klass in TEST_CLASSES:
-                command = ["mill", "-i", "xiangshan.test.testOnly", klass]
-                log = output.parent / f"{klass.split('.')[-1]}.log"
-                item_status, rc, elapsed = run(command, xiangshan, log, args.timeout)
-                if item_status != "pass" and status == "pass":
-                    status = item_status
-                records.append({"name": klass, "command": command, "status": item_status, "return_code": rc, "log_path": str(log), "host_time": elapsed})
+            if status == "pass":
+                for klass in TEST_CLASSES:
+                    command = ["mill", "-i", "xiangshan.test.testOnly", klass]
+                    log = output.parent / f"{klass.split('.')[-1]}.log"
+                    item_status, rc, elapsed = run(command, work_xiangshan, log, args.timeout, env)
+                    if item_status != "pass" and status == "pass":
+                        status = item_status
+                    records.append({"name": klass, "command": command, "status": item_status, "return_code": rc, "log_path": str(log), "host_time": elapsed, "cwd": str(work_xiangshan)})
 
-    payload = {"schema_version": 1, "layer": "l1", "target": f"xiangshan-linux-{args.mode}", "status": status, "reason": reason, "results": records}
+    payload = {"schema_version": 1, "layer": "l1", "target": f"xiangshan-linux-{args.mode}", "status": status, "reason": reason, "workspace": str(prepare_result.get("workspace", xiangshan)), "environment": env_diagnostics, "prepare": prepare_result, "results": records}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, sort_keys=True))
