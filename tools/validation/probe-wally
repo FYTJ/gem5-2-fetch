@@ -15,6 +15,14 @@ from pathlib import Path
 
 DEFAULT_REPO = "https://github.com/openhwgroup/cvw.git"
 DEFAULT_COMMIT = "03f16461df99ac6de077a0549693c887fa04892d"
+STATUS_ENUM = (
+    "pass",
+    "fail",
+    "timeout",
+    "unsupported",
+    "blocked_missing_artifact",
+    "blocked_env",
+)
 MATRIX_STATUSES = (
     "direct_run",
     "needs_wally_harness_support",
@@ -39,6 +47,90 @@ def run(command: list[str], cwd: Path, log_path: Path, timeout: int = 600, env: 
         except subprocess.TimeoutExpired:
             log.write(f"\nTIMEOUT after {timeout}s\n")
             return "timeout", None, round(time.monotonic() - start, 3)
+
+
+def candidate_riscv_prefixes() -> list[Path]:
+    prefixes = []
+    env_riscv = os.environ.get("RISCV")
+    if env_riscv:
+        prefixes.append(Path(env_riscv))
+    prefixes.extend(
+        [
+            Path("/usr"),
+            Path("/usr/local"),
+            Path.home() / "riscv-unknown-elf",
+            Path.home() / "riscv",
+        ]
+    )
+    unique = []
+    seen = set()
+    for prefix in prefixes:
+        key = str(prefix)
+        if key not in seen:
+            seen.add(key)
+            unique.append(prefix)
+    return unique
+
+
+def infer_riscv_prefix() -> Path | None:
+    for prefix in candidate_riscv_prefixes():
+        if (prefix / "bin" / "riscv64-unknown-elf-gcc").exists():
+            return prefix
+    path_gcc = shutil.which("riscv64-unknown-elf-gcc")
+    if path_gcc:
+        return Path(path_gcc).resolve().parents[1]
+    return None
+
+
+def toolchain_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    env = (base or os.environ).copy()
+    prefix = Path(env["RISCV"]) if env.get("RISCV") else infer_riscv_prefix()
+    extra_paths = []
+    if prefix is not None:
+        env["RISCV"] = str(prefix)
+        extra_paths.append(str(prefix / "bin"))
+    for candidate in (
+        Path.home() / "spike-local" / "install" / "bin",
+        Path.home() / "spike-local" / "build",
+    ):
+        if (candidate / "elf2hex").exists():
+            extra_paths.append(str(candidate))
+    if extra_paths:
+        env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
+    return env
+
+
+def toolchain_diagnostics(env: dict[str, str] | None = None) -> dict:
+    check_env = toolchain_env(env)
+    path = check_env.get("PATH", "")
+    riscv = check_env.get("RISCV")
+    prefix_gcc = str(Path(riscv) / "bin" / "riscv64-unknown-elf-gcc") if riscv else None
+    prefix_gcc_exists = bool(prefix_gcc and Path(prefix_gcc).exists())
+    elf2hex_candidates = [
+        str(path)
+        for path in (
+            Path.home() / "spike-local" / "install" / "bin" / "elf2hex",
+            Path.home() / "spike-local" / "build" / "elf2hex",
+        )
+        if path.exists()
+    ]
+    return {
+        "env_RISCV": os.environ.get("RISCV"),
+        "effective_RISCV": riscv,
+        "prefix_gcc": prefix_gcc,
+        "prefix_gcc_exists": prefix_gcc_exists,
+        "tools": {
+            name: shutil.which(name, path=path)
+            for name in (
+                "riscv64-unknown-elf-gcc",
+                "riscv64-unknown-elf-objcopy",
+                "riscv64-unknown-elf-objdump",
+                "riscv64-linux-gnu-gcc",
+                "elf2hex",
+            )
+        },
+        "elf2hex_candidates": elf2hex_candidates,
+    }
 
 
 def prepare(root: Path, output_dir: Path, repo: str, commit: str) -> dict:
@@ -77,6 +169,7 @@ def prepare(root: Path, output_dir: Path, repo: str, commit: str) -> dict:
     completed = subprocess.run([*safe_git, "rev-parse", "HEAD"], cwd=cvw, text=True, capture_output=True, check=False)
     result["actual_commit"] = completed.stdout.strip() if completed.returncode == 0 else ""
     result["tools"] = {name: shutil.which(name) for name in ("make", "verilator", "python3", "riscv64-unknown-elf-gcc", "riscv64-linux-gnu-gcc")}
+    result["toolchain"] = toolchain_diagnostics()
     return result
 
 
@@ -150,12 +243,14 @@ def benchmark_attempt(root: Path, output_dir: Path, benchmark: str, prepare_resu
     status = "needs_wally_harness_support" if prepare_result["status"] == "pass" else "blocked_env"
     reason = "发现 benchmark 相关路径，但本轮尚未找到可直接消费本仓 baremetal workload 的 Wally runner" if matches else "未找到可直接运行的 benchmark target"
     command_result = None
+    diag = toolchain_diagnostics()
     if prepare_result["status"] != "pass":
         reason = prepare_result["reason"]
     elif benchmark == "coremark" and (cvw / "benchmarks" / "coremark" / "Makefile").exists():
-        env = os.environ.copy()
+        env = toolchain_env()
         env["WALLY"] = str(cvw)
         env["PATH"] = f"{cvw / 'bin'}:{env.get('PATH', '')}"
+        diag = toolchain_diagnostics(env)
         submodule_result = None
         if not (cvw / "addins" / "coremark" / "core_main.c").exists():
             sub_log = output_dir / "logs" / "coremark-submodule.log"
@@ -189,9 +284,24 @@ def benchmark_attempt(root: Path, output_dir: Path, benchmark: str, prepare_resu
         "benchmark": benchmark,
         "status": status,
         "reason": reason,
+        "toolchain": diag,
         "evidence_paths": matches,
         "attempt": command_result,
     }
+
+
+def aggregate_benchmark_status(benchmark_status: str, prepare_status: str) -> str:
+    if prepare_status != "pass":
+        return prepare_status if prepare_status in STATUS_ENUM else "blocked_env"
+    if benchmark_status == "direct_run":
+        return "pass"
+    if benchmark_status == "needs_wally_harness_support":
+        return "unsupported"
+    if benchmark_status in STATUS_ENUM:
+        return benchmark_status
+    if benchmark_status in {"target_unsupported", "needs_test_adaptation"}:
+        return "unsupported"
+    return "fail"
 
 
 def main(argv: list[str]) -> int:
@@ -218,7 +328,8 @@ def main(argv: list[str]) -> int:
     if args.benchmark:
         payload["benchmark"] = benchmark_attempt(root, output_dir, args.benchmark, prep)
         payload["seam"] = scan_seam(root)
-        payload["status"] = "pass" if prep["status"] == "pass" else prep["status"]
+        payload["toolchain"] = payload["benchmark"].get("toolchain", toolchain_diagnostics())
+        payload["status"] = aggregate_benchmark_status(payload["benchmark"]["status"], prep["status"])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, sort_keys=True))

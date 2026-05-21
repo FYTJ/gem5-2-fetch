@@ -60,7 +60,7 @@ def load_json(path: Path) -> dict[str, Any] | None:
 
 
 def summarize_statuses(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts = Counter(row.get("status", "missing") for row in rows)
+    counts = Counter(row.get("effective_status", row.get("status", "missing")) for row in rows)
     return {status: counts.get(status, 0) for status in (*STATUS_ENUM, "missing")}
 
 
@@ -101,24 +101,131 @@ def load_details(root: Path) -> dict[str, Any]:
     return details
 
 
-def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) -> dict[str, Any]:
+def normalize_status(status: Any) -> str | None:
+    if status is None:
+        return None
+    if status == "direct_run":
+        return "pass"
+    if status in {"needs_wally_harness_support", "needs_test_adaptation", "target_unsupported"}:
+        return "unsupported"
+    if status in STATUS_ENUM or status == "missing":
+        return str(status)
+    return "fail"
+
+
+def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | None:
+    target = row.get("target")
+    if target == "wally-benchmark":
+        return details.get("wally_benchmark", {}).get("benchmark", {}).get("status")
+    if target == "wally-isa-matrix":
+        return details.get("wally_isa_matrix", {}).get("status")
+    if target == "wally-prepare":
+        return details.get("wally_prepare", {}).get("status")
+    if target == "gem5-bpu-unit":
+        return details.get("gem5_bpu", {}).get("status")
+    if target == "xiangshan-bpu-schema":
+        return details.get("bpu_trace_schema", {}).get("status")
+    if target == "xiangshan-linux-compile":
+        return details.get("xiangshan_compile", {}).get("status")
+    if target == "xiangshan-linux-bpu-scalatest":
+        return details.get("xiangshan_bpu_scalatest", {}).get("status")
+    if target == "gem5-isa-first-layer":
+        return details.get("gem5_l3_isa", {}).get("status")
+    if target == "gem5-medium":
+        return details.get("gem5_l3_medium", {}).get("status")
+    return None
+
+
+def apply_effective_statuses(gates: list[dict[str, Any]], details: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    normalized_rows = []
+    inconsistent = []
+    for row in gates:
+        new_row = dict(row)
+        harness_status = normalize_status(row.get("status"))
+        detail_status = detail_status_for(row, details)
+        effective_status = normalize_status(detail_status) or harness_status or "missing"
+        new_row["harness_status"] = harness_status
+        new_row["detail_status"] = detail_status
+        new_row["effective_status"] = effective_status
+        new_row["status"] = effective_status
+        if detail_status is not None and harness_status != effective_status:
+            inconsistent.append(
+                {
+                    "source": row.get("source"),
+                    "target": row.get("target"),
+                    "harness_status": harness_status,
+                    "detail_status": detail_status,
+                    "effective_status": effective_status,
+                    "reason": "harness top-level status conflicts with detail status",
+                }
+            )
+        normalized_rows.append(new_row)
+    return normalized_rows, inconsistent
+
+
+def run_time_summary(gates: list[dict[str, Any]]) -> dict[str, Any]:
     rows = []
     for row in gates:
-        fields = {name: row.get(name) for name in ("simInsts", "instrCnt", "cycles", "IPC", "host_time", "stats_path")}
-        if any(value is not None for value in fields.values()):
-            rows.append({"target": row.get("target"), "host": row.get("host"), **fields})
+        if row.get("host_time") is not None:
+            rows.append(
+                {
+                    "target": row.get("target"),
+                    "host": row.get("host"),
+                    "status": row.get("effective_status", row.get("status")),
+                    "host_time": row.get("host_time"),
+                }
+            )
+    total_host_time = sum(row["host_time"] for row in rows if isinstance(row.get("host_time"), (int, float)))
+    return {"rows": rows, "total_host_time": round(total_host_time, 3)}
+
+
+def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) -> dict[str, Any]:
+    metric_names = ("simInsts", "instrCnt", "cycles", "IPC")
+    valid_rows = []
+    debug_artifacts = []
+    for row in gates:
+        metrics = {name: row.get(name) for name in metric_names}
+        status = row.get("effective_status", row.get("status"))
+        if status == "pass" and all(metrics[name] is not None for name in metric_names):
+            valid_rows.append({"target": row.get("target"), "host": row.get("host"), **metrics, "stats_path": row.get("stats_path")})
+        elif row.get("stats_path"):
+            debug_artifacts.append(
+                {
+                    "target": row.get("target"),
+                    "host": row.get("host"),
+                    "status": status,
+                    "stats_path": row.get("stats_path"),
+                    "reason": "stats_path is debug-only because workload did not provide a full pass+metrics performance sample",
+                }
+            )
     l3_results = details.get("gem5_l3_isa", {}).get("results", [])
-    stats_files = sum(1 for row in l3_results if row.get("stats_path"))
+    for row in l3_results:
+        if row.get("stats_path") and row.get("status") != "pass":
+            debug_artifacts.append(
+                {
+                    "target": "gem5-isa-first-layer",
+                    "workload": row.get("id"),
+                    "status": row.get("status"),
+                    "stats_path": row.get("stats_path"),
+                    "reason": "GEM5 stats from non-pass workload are retained only as debug artifacts",
+                }
+            )
+    invalid_reasons = []
+    if not valid_rows:
+        invalid_reasons.append("no correctness-pass workload exposes simInsts/instrCnt/cycles/IPC")
     return {
-        "harness_rows_with_perf_fields": rows,
-        "gem5_l3_stats_files": stats_files,
-        "note": "performance fields are only authoritative after correctness gates pass; current medium and SPEC gates are not performance runs",
+        "performance_valid": bool(valid_rows),
+        "valid_rows": valid_rows,
+        "debug_artifacts": debug_artifacts,
+        "invalid_reason": "; ".join(invalid_reasons) if invalid_reasons else None,
+        "note": "host_time is reported in run_time_summary; performance_summary only contains DUT performance metrics from correctness-pass workloads",
     }
 
 
 def build_summary(root: Path) -> dict[str, Any]:
     details = load_details(root)
-    gates = flatten_harness_results(root)
+    raw_gates = flatten_harness_results(root)
+    gates, inconsistent_statuses = apply_effective_statuses(raw_gates, details)
     manifest_summary = details.get("manifest", {}).get("summary", {})
     wally_matrix = details.get("wally_isa_matrix", {}).get("matrix", {}).get("summary", {})
     wally_benchmark = details.get("wally_benchmark", {}).get("benchmark", {})
@@ -129,6 +236,7 @@ def build_summary(root: Path) -> dict[str, Any]:
         "manifest_summary": manifest_summary,
         "gate_summary": summarize_statuses(gates),
         "gates": gates,
+        "inconsistent_statuses": inconsistent_statuses,
         "detail_summary": {
             "gem5_bpu_status": details.get("gem5_bpu", {}).get("status"),
             "bpu_trace_schema_status": details.get("bpu_trace_schema", {}).get("status"),
@@ -143,6 +251,7 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),
             "xiangshan_l3_status": details.get("xiangshan_l3_local_blocker", {}).get("status"),
         },
+        "run_time_summary": run_time_summary(gates),
         "performance_summary": performance_summary(gates, details),
     }
     return payload
@@ -164,20 +273,34 @@ def write_markdown(path: Path, payload: dict[str, Any]) -> None:
             "",
             "## Harness Gates",
             "",
-            "| layer | target | host | status | reason |",
-            "|---|---|---|---|---|",
+            "| layer | target | host | effective_status | harness_status | detail_status | reason |",
+            "|---|---|---|---|---|---|---|",
         ]
     )
     for row in payload["gates"]:
         reason = str(row.get("exit_reason") or "").replace("|", "/")
-        lines.append(f"| {row.get('layer', '')} | {row.get('target', '')} | {row.get('host', '')} | {row.get('status', '')} | {reason} |")
+        lines.append(
+            f"| {row.get('layer', '')} | {row.get('target', '')} | {row.get('host', '')} | {row.get('effective_status', '')} | {row.get('harness_status', '')} | {row.get('detail_status', '')} | {reason} |"
+        )
     lines.extend(
         [
+            "",
+            "## Inconsistent Statuses",
+            "",
+            "```json",
+            json.dumps(payload["inconsistent_statuses"], indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
             "",
             "## Detail Summary",
             "",
             "```json",
             json.dumps(payload["detail_summary"], indent=2, ensure_ascii=False, sort_keys=True),
+            "```",
+            "",
+            "## Run Time Summary",
+            "",
+            "```json",
+            json.dumps(payload["run_time_summary"], indent=2, ensure_ascii=False, sort_keys=True),
             "```",
             "",
             "## Performance Summary",

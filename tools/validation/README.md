@@ -12,7 +12,15 @@ tools/validation/collect-validation-results --output build/validation/final-summ
 
 结果字段固定包含 `layer`、`target`、`workload`、`host`、`cwd`、`command`、`return_code`、`status`、`log_path`、`stats_path`、`exit_reason`、`difftest`、`simInsts`、`instrCnt`、`cycles`、`IPC`、`host_time`。状态枚举为 `pass`、`fail`、`timeout`、`unsupported`、`blocked_missing_artifact`、`blocked_env`。
 
-`collect-validation-results` 只读取已有 JSON 结果并生成总表，用于 Task 006 和 Phase C 汇总。它不会重跑仿真，也不会把 L3 timeout、Wally benchmark 环境阻塞或 SPEC checkpoint 缺失改写为通过结论。
+`collect-validation-results` 只读取已有 JSON 结果并生成总表，用于 Task 006 和 Phase C 汇总。它不会重跑仿真，也不会把 L3 timeout、Wally benchmark 环境阻塞或 SPEC checkpoint 缺失改写为通过结论。汇总中会保留 `harness_status`、`detail_status` 和 `effective_status`；总表按 `effective_status` 计数，若顶层状态与细节状态冲突，会写入 `inconsistent_statuses`。
+
+运行耗时和 DUT 性能分开汇总：`host_time` 只进入 `run_time_summary`；`performance_summary.performance_valid` 只有在 correctness-pass workload 同时提供 `simInsts`、`instrCnt`、`cycles`、`IPC` 时才为 true。timeout/fail workload 的 `stats_path` 仅作为 debug artifact。
+
+状态与性能口径回归检查：
+
+```bash
+tools/validation/check-validation-summary-consistency
+```
 
 RV64 随机抽样验证入口用于从 manifest 中选择同时具备 GEM5 和 XiangShan 后端产物、且不含 trap/CSR/counter/PMP 等高风险需求标签的测试：
 

@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Regression checks for validation status aggregation and performance validity."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import tempfile
+from pathlib import Path
+from importlib.machinery import SourceFileLoader
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def load_collector():
+    path = repo_root() / "tools" / "validation" / "collect-validation-results"
+    loader = SourceFileLoader("collect_validation_results", str(path))
+    spec = importlib.util.spec_from_loader("collect_validation_results", loader)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load collector from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_json(root: Path, rel: str, payload: dict) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def harness_result(status: str, target: str = "wally-benchmark", **extra) -> dict:
+    row = {
+        "layer": "l25",
+        "target": target,
+        "workload": "fixture",
+        "host": "linux",
+        "status": status,
+        "return_code": 0 if status == "pass" else 1,
+        "exit_reason": "fixture",
+        "log_path": "fixture.log",
+        "stats_path": None,
+        "simInsts": None,
+        "instrCnt": None,
+        "cycles": None,
+        "IPC": None,
+        "host_time": 1.0,
+    }
+    row.update(extra)
+    return {"schema_version": 1, "results": [row]}
+
+
+def check_blocked_detail_overrides_pass(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root, "build/validation/task004-wally-benchmark/results.json", harness_result("pass"))
+        write_json(root, "build/validation/wally-benchmark/results.json", {"benchmark": {"status": "blocked_env"}})
+        payload = collector.build_summary(root)
+        assert payload["gate_summary"]["blocked_env"] == 1, payload["gate_summary"]
+        assert payload["gate_summary"]["pass"] == 0, payload["gate_summary"]
+        assert payload["inconsistent_statuses"], payload
+        item = payload["inconsistent_statuses"][0]
+        assert item["target"] == "wally-benchmark", item
+        assert item["harness_status"] == "pass", item
+        assert item["effective_status"] == "blocked_env", item
+
+
+def check_direct_run_passes(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(root, "build/validation/task004-wally-benchmark/results.json", harness_result("pass"))
+        write_json(root, "build/validation/wally-benchmark/results.json", {"benchmark": {"status": "direct_run"}})
+        payload = collector.build_summary(root)
+        assert payload["gate_summary"]["pass"] == 1, payload["gate_summary"]
+        assert payload["inconsistent_statuses"] == [], payload["inconsistent_statuses"]
+
+
+def check_non_pass_stats_are_debug_only(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/task005-gem5-isa/results.json",
+            harness_result("fail", target="gem5-isa-first-layer", stats_path="m5out/stats.txt"),
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5/isa/results.json",
+            {
+                "status": "fail",
+                "results": [{"id": "rv64ui-p-add", "status": "fail", "stats_path": "m5out/rv64ui-p-add/stats.txt"}],
+            },
+        )
+        payload = collector.build_summary(root)
+        perf = payload["performance_summary"]
+        assert perf["performance_valid"] is False, perf
+        assert perf["valid_rows"] == [], perf
+        assert perf["debug_artifacts"], perf
+
+
+def main() -> int:
+    collector = load_collector()
+    checks = [
+        check_blocked_detail_overrides_pass,
+        check_direct_run_passes,
+        check_non_pass_stats_are_debug_only,
+    ]
+    for check in checks:
+        check(collector)
+        print(f"PASS {check.__name__}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
