@@ -20,6 +20,9 @@ STATUS_ENUM = (
 )
 
 HARNESS_RESULT_PATHS = (
+    "build/validation/task004-l1/results.json",
+    "build/validation/task004-l2/results.json",
+    "build/validation/task004-l25/results.json",
     "build/validation/task003-l1-riscv-tests/results.json",
     "build/validation/task003-l1-gem5-entry/results.json",
     "build/validation/task003-xs-compile/results.json",
@@ -29,8 +32,6 @@ HARNESS_RESULT_PATHS = (
     "build/validation/task003-schema-harness/results.json",
     "build/validation/task004-wally-matrix/results.json",
     "build/validation/task004-wally-benchmark/results.json",
-    "build/validation/task005-gem5-isa/results.json",
-    "build/validation/task005-gem5-medium/results.json",
 )
 
 DETAIL_RESULT_PATHS = {
@@ -45,7 +46,8 @@ DETAIL_RESULT_PATHS = {
     "gem5_l3_isa": "build/validation/l3-gem5/isa/results.json",
     "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
     "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
-    "xiangshan_l3_local_blocker": "build/validation/task005-xs-local-blocker/results.json",
+    "xiangshan_l3_eda00_smoke": "build/validation/l3-xiangshan/eda00-smoke/results.json",
+    "xiangshan_l3_local_blocker": "build/validation/l3-xiangshan/local-guard/results.json",
 }
 
 
@@ -66,17 +68,21 @@ def summarize_statuses(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 def flatten_harness_results(root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen_targets = set()
     for rel in HARNESS_RESULT_PATHS:
         payload = load_json(root / rel)
         if payload is None:
-            rows.append({"source": rel, "status": "missing"})
             continue
         for result in payload.get("results", []):
+            target = result.get("target")
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
             rows.append(
                 {
                     "source": rel,
                     "layer": result.get("layer"),
-                    "target": result.get("target"),
+                    "target": target,
                     "workload": result.get("workload"),
                     "host": result.get("host"),
                     "status": result.get("status"),
@@ -94,11 +100,65 @@ def flatten_harness_results(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> list[dict[str, Any]]:
+    xiangshan_l3 = xiangshan_l3_detail(details)
+    specs = (
+        ("gem5_l3_isa", "l3", "gem5-isa-first-layer", "linux", "complete rv64ui/rv64um/rv64mi manifest"),
+        ("gem5_l3_medium", "l3", "gem5-medium", "linux", "CoreMark/Dhrystone/microbench"),
+        ("gem5_l3_spec2006", "l3", "spec2006-checkpoint", "linux/eda-00", "SPEC2006 checkpoint manifest"),
+        ("xiangshan_l3", "l3", "xiangshan-emu-isa", "eda-00", "XiangShan eda-00 smoke / complete rv64ui/rv64um/rv64mi manifest"),
+    )
+    rows = []
+    for key, layer, target, host, workload in specs:
+        if target in existing_targets:
+            continue
+        if key == "xiangshan_l3":
+            payload = xiangshan_l3
+            source = (
+                DETAIL_RESULT_PATHS["xiangshan_l3_eda00_smoke"]
+                if details.get("xiangshan_l3_eda00_smoke", {}).get("status") not in {None, "missing"}
+                else DETAIL_RESULT_PATHS["xiangshan_l3_local_blocker"]
+            )
+        else:
+            payload = details.get(key, {})
+            source = DETAIL_RESULT_PATHS[key]
+        status = payload.get("status")
+        if status in {None, "missing"}:
+            continue
+        rows.append(
+            {
+                "source": source,
+                "layer": layer,
+                "target": target,
+                "workload": workload,
+                "host": host,
+                "status": status,
+                "return_code": None,
+                "exit_reason": payload.get("reason"),
+                "log_path": payload.get("path"),
+                "stats_path": None,
+                "simInsts": None,
+                "instrCnt": None,
+                "cycles": None,
+                "IPC": None,
+                "host_time": None,
+            }
+        )
+    return rows
+
+
 def load_details(root: Path) -> dict[str, Any]:
     details: dict[str, Any] = {}
     for name, rel in DETAIL_RESULT_PATHS.items():
         details[name] = load_json(root / rel) or {"status": "missing", "path": rel}
     return details
+
+
+def xiangshan_l3_detail(details: dict[str, Any]) -> dict[str, Any]:
+    eda00_smoke = details.get("xiangshan_l3_eda00_smoke", {})
+    if eda00_smoke.get("status") not in {None, "missing"}:
+        return eda00_smoke
+    return details.get("xiangshan_l3_local_blocker", {})
 
 
 def normalize_status(status: Any) -> str | None:
@@ -133,6 +193,10 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("gem5_l3_isa", {}).get("status")
     if target == "gem5-medium":
         return details.get("gem5_l3_medium", {}).get("status")
+    if target == "spec2006-checkpoint":
+        return details.get("gem5_l3_spec2006", {}).get("status")
+    if target == "xiangshan-emu-isa":
+        return xiangshan_l3_detail(details).get("status")
     return None
 
 
@@ -225,11 +289,13 @@ def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) ->
 def build_summary(root: Path) -> dict[str, Any]:
     details = load_details(root)
     raw_gates = flatten_harness_results(root)
+    raw_gates.extend(detail_gate_rows(details, {row.get("target") for row in raw_gates}))
     gates, inconsistent_statuses = apply_effective_statuses(raw_gates, details)
     manifest_summary = details.get("manifest", {}).get("summary", {})
     wally_matrix = details.get("wally_isa_matrix", {}).get("matrix", {}).get("summary", {})
     wally_benchmark = details.get("wally_benchmark", {}).get("benchmark", {})
     gem5_l3_isa = details.get("gem5_l3_isa", {})
+    xiangshan_l3 = xiangshan_l3_detail(details)
     payload = {
         "schema_version": 1,
         "status_enum": STATUS_ENUM,
@@ -249,7 +315,9 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_isa_summary": gem5_l3_isa.get("summary"),
             "gem5_l3_medium_status": details.get("gem5_l3_medium", {}).get("status"),
             "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),
-            "xiangshan_l3_status": details.get("xiangshan_l3_local_blocker", {}).get("status"),
+            "xiangshan_l3_status": xiangshan_l3.get("status"),
+            "xiangshan_l3_reason": xiangshan_l3.get("reason"),
+            "xiangshan_l3_source": xiangshan_l3.get("source"),
         },
         "run_time_summary": run_time_summary(gates),
         "performance_summary": performance_summary(gates, details),

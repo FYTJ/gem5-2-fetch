@@ -219,6 +219,8 @@ q2 登录节点禁止运行代码；编译、测试、仿真和批处理都必�
 | `ssh-qimeng2-fast` | 复用 ControlMaster 执行短命令，推荐日常使用 | 否 |
 | `ssh-qimeng2-close` | 主动关闭 ControlMaster 长连接 | 否 |
 | `ssh-qimeng2` | 旧版单次认证入口，仅在需要独立交互登录时使用 | 是 |
+| `ssh-rockyos8-fast` / `ssh-rockyos-fast` | 复用 q2 ControlMaster 跳转 RockyOS，支持短命令和交互 shell | 否 |
+| `ssh-eda00-fast` | 复用 q2 ControlMaster 跳转 `eda-00`，支持短命令和交互 shell | 否 |
 
 推荐用法：
 
@@ -237,6 +239,8 @@ ssh-qimeng2-close
 - 凭据文件：`~/.ssh/qimeng_password`、`~/.ssh/totp_secret`
 
 TOTP 限制：每个 6 位验证码 30 秒内只能用一次。优先使用 `ssh-qimeng2-open` + `ssh-qimeng2-fast`，减少重复认证。
+
+RockyOS 与 `eda-00` wrapper 默认复用同一个 q2 密码文件：若 `ROCKYOS8_PASSWORD` / `EDA00_PASSWORD` 未设置，会读取 `~/.ssh/qimeng_password`；只有环境变量和凭据文件都不可用且 stdin 是 TTY 时，才退回交互读取。不要把密码字面量写入仓库文件、脚本文件、日志或远端配置。
 
 #### 文件同步
 
@@ -314,7 +318,7 @@ ssh-rockyos8-fast 'hostname; whoami; pwd'
 ssh-rockyos8-fast
 ```
 
-如果需要让 wrapper 一次性输入 RockyOS 密码，只能使用本机临时环境变量或交互读取，不落盘、不提交：
+RockyOS wrapper 默认在本机读取 `~/.ssh/qimeng_password`，因此短命令通常不需要人工输入密码。如果需要覆盖密码，只能使用本机临时环境变量或交互读取，不落盘、不提交：
 
 ```bash
 read -rsp 'rockyos8-login0 password: ' ROCKYOS8_PASSWORD; echo
@@ -371,7 +375,7 @@ RockyOS 侧项目目录继续使用共享路径：
 
 #### 登录脚本
 
-`eda-00` 一键入口通常通过本机 `~/.local/bin/ssh-eda00-fast` 调用。`paper-RAG` 源仓曾提供仓内 `tools/ssh-eda00-fast`，但当前仓不默认假设该脚本存在；若当前仓没有对应脚本，只使用本机 wrapper 或在明确允许后再迁入脚本。该入口复用 q2 ControlMaster，在 q2 登录节点上跳转到 `eda-00`，支持交互 shell 和短命令模式。
+`eda-00` 一键入口通过本机独立脚本 `~/.local/bin/ssh-eda00-fast` 调用。该脚本不是 `paper-RAG/tools/ssh-eda00-fast` 的 symlink；`paper-RAG` 仓内脚本仅作为源仓留档，不是当前仓默认入口。该入口复用 q2 ControlMaster，在 q2 登录节点上跳转到 `eda-00`，支持交互 shell 和短命令模式。
 
 推荐用法：
 
@@ -381,7 +385,7 @@ ssh-eda00-fast 'hostname; whoami; pwd'
 ssh-eda00-fast
 ```
 
-如果需要让 wrapper 一次性输入 `eda-00` 密码，只能使用本机临时环境变量或交互读取，不落盘、不提交：
+`eda-00` wrapper 默认在本机读取 `~/.ssh/qimeng_password`，因此短命令通常不需要人工输入密码。如果需要覆盖密码，只能使用本机临时环境变量或交互读取，不落盘、不提交：
 
 ```bash
 read -rsp 'eda-00 password: ' EDA00_PASSWORD; echo

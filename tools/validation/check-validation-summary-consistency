@@ -100,12 +100,34 @@ def check_non_pass_stats_are_debug_only(collector) -> None:
         assert perf["debug_artifacts"], perf
 
 
+def check_eda00_smoke_overrides_local_guard(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-xiangshan/local-guard/results.json",
+            {"status": "blocked_env", "reason": "local guard"},
+        )
+        write_json(
+            root,
+            "build/validation/l3-xiangshan/eda00-smoke/results.json",
+            {"status": "pass", "reason": "eda-00 smoke passed", "source": "paper-RAG/tools/ssh-eda00-fast"},
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["xiangshan_l3_status"] == "pass", detail
+        assert detail["xiangshan_l3_source"] == "paper-RAG/tools/ssh-eda00-fast", detail
+        gate = next(row for row in payload["gates"] if row["target"] == "xiangshan-emu-isa")
+        assert gate["effective_status"] == "pass", gate
+
+
 def main() -> int:
     collector = load_collector()
     checks = [
         check_blocked_detail_overrides_pass,
         check_direct_run_passes,
         check_non_pass_stats_are_debug_only,
+        check_eda00_smoke_overrides_local_guard,
     ]
     for check in checks:
         check(collector)
