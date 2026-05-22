@@ -33,6 +33,133 @@ XiangShan: 5123974942833f8d63672f0c132ec9787e8a650a
 
 后续修改 TAGE/BTBTAGE 或比较 base-only 前后行为时，默认先使用本节命令。若命令失败，需要记录完整命令、运行节点、commit、返回码和日志路径；不要把较弱验证写成较强结论。
 
+### RV64 77 项轻量全系统 suite
+
+后续轻量全系统正确性验证默认使用 `supported-cross-77` suite。该 suite 以当前 `build/validation/l3-gem5/isa/results.json` 中 `status=pass` 的 79 项 GEM5 RV64 ISA L3 结果为来源，再排除已经在 CORE-V Wally 和 XiangShan Chisel/Verilator 完整 direct-run 中证明不通过的 2 项，形成当前跨 GEM5、CORE-V Wally、XiangShan 三条路径都适合作为默认 gate 的 77 项轻量功能测试集。
+
+历史 `supported-gem5-79` 仍可作为 GEM5-supported 来源证据理解：GEM5 当前为 `79 pass / 5 unsupported / 0 fail / 0 timeout`。但后续默认项目共识不再要求 Wally/XiangShan 默认执行已知不通过的 `rv64mi-p-scall` 和 `rv64mi-p-pmpaddr`。
+
+机器可读入口：
+
+```bash
+tools/validation/select-rv64-supported-suite --suite supported-cross-77 --format json --summary
+tools/validation/select-rv64-supported-suite --format ids
+tools/validation/run-l3-gem5 --stage isa --suite supported-cross-77
+tools/validation/run-l3-wally --stage isa --suite supported-cross-77
+tools/validation/run-l3-xiangshan --stage isa --suite supported-cross-77 --dry-run
+```
+
+当前 suite 分布：
+
+| suite | count |
+| --- | ---: |
+| `rv64ui` | 52 |
+| `rv64um` | 13 |
+| `rv64mi` | 12 |
+| total | 77 |
+
+默认排除以下 5 项 GEM5 known unsupported 测试，不得把它们纳入 `supported-cross-77`：
+
+- `rv64ui-p-fence_i`：当前 GEM5 raw-cpt ISA gate 不验证 `fence.i` / self-modifying-code 的 I-cache coherence。
+- `rv64ui-p-ma_data`：该测试依赖 misaligned data access 完整行为，不属于当前轻量 gate 的稳定契约。
+- `rv64mi-p-csr`：privileged CSR side effects 不属于当前轻量兼容性契约。
+- `rv64mi-p-illegal`：privileged illegal-instruction trap flow 在当前 runner 下不能自然终止。
+- `rv64mi-p-instret_overflow`：`minstret` 写入/溢出语义与当前实现不匹配。
+
+在 GEM5 pass 的 79 项中，额外排除以下 2 项跨目标非 pass 测试：
+
+- `rv64mi-p-scall`：CORE-V Wally 完整 suite 中 instruction limit 前未到达预期 `tohost` pass 路径；当前归类为 ecall/trap-sensitive 测试与 Wally runner/处理器行为契约不匹配的非 pass，证据为 `build/validation/l3-wally/isa/logs/rv64mi-p-scall.log`。
+- `rv64mi-p-pmpaddr`：XiangShan emu/difftest 中出现 PMP 相关寄存器差异；当前归类为 XiangShan/NEMU difftest 或 PMP 语义匹配问题的非 pass，证据为 `build/validation/l3-xiangshan/isa/logs/rv64mi-p-pmpaddr.log`。
+
+77 项测试 ID：
+
+```text
+rv64ui-p-add
+rv64ui-p-addi
+rv64ui-p-addiw
+rv64ui-p-addw
+rv64ui-p-and
+rv64ui-p-andi
+rv64ui-p-auipc
+rv64ui-p-beq
+rv64ui-p-bge
+rv64ui-p-bgeu
+rv64ui-p-blt
+rv64ui-p-bltu
+rv64ui-p-bne
+rv64ui-p-jal
+rv64ui-p-jalr
+rv64ui-p-lb
+rv64ui-p-lbu
+rv64ui-p-ld
+rv64ui-p-ld_st
+rv64ui-p-lh
+rv64ui-p-lhu
+rv64ui-p-lui
+rv64ui-p-lw
+rv64ui-p-lwu
+rv64ui-p-or
+rv64ui-p-ori
+rv64ui-p-sb
+rv64ui-p-sd
+rv64ui-p-sh
+rv64ui-p-simple
+rv64ui-p-sll
+rv64ui-p-slli
+rv64ui-p-slliw
+rv64ui-p-sllw
+rv64ui-p-slt
+rv64ui-p-slti
+rv64ui-p-sltiu
+rv64ui-p-sltu
+rv64ui-p-sra
+rv64ui-p-srai
+rv64ui-p-sraiw
+rv64ui-p-sraw
+rv64ui-p-srl
+rv64ui-p-srli
+rv64ui-p-srliw
+rv64ui-p-srlw
+rv64ui-p-st_ld
+rv64ui-p-sub
+rv64ui-p-subw
+rv64ui-p-sw
+rv64ui-p-xor
+rv64ui-p-xori
+rv64um-p-div
+rv64um-p-divu
+rv64um-p-divuw
+rv64um-p-divw
+rv64um-p-mul
+rv64um-p-mulh
+rv64um-p-mulhsu
+rv64um-p-mulhu
+rv64um-p-mulw
+rv64um-p-rem
+rv64um-p-remu
+rv64um-p-remuw
+rv64um-p-remw
+rv64mi-p-breakpoint
+rv64mi-p-ld-misaligned
+rv64mi-p-lh-misaligned
+rv64mi-p-lw-misaligned
+rv64mi-p-ma_addr
+rv64mi-p-ma_fetch
+rv64mi-p-mcsr
+rv64mi-p-sbreak
+rv64mi-p-sd-misaligned
+rv64mi-p-sh-misaligned
+rv64mi-p-sw-misaligned
+rv64mi-p-zicntr
+```
+
+推荐验证边界：
+
+- GEM5：使用 `supported-cross-77` 证明当前 GEM5 raw-cpt L3 ISA gate 能跑通这 77 项轻量 RV64 程序；历史 79 项只作为 GEM5-supported 来源证据。
+- CORE-V Wally：后续 runner 必须消费同一 77 项 ID 列表并产生 direct run 结构化结果；不能用 Wally matrix 分类替代 direct run，也不能把被排除的 `rv64mi-p-scall` 写成通过。
+- XiangShan Chisel/RTL：后续 emu/difftest runner 必须在 q2 `eda-00` 消费同一 77 项 ID 列表；不能用旧的 5 项 smoke 结果替代完整 suite，也不能把被排除的 `rv64mi-p-pmpaddr` 写成通过。
+- 该 suite 只证明轻量功能正确性门槛，不证明 SPEC2006、medium workload、性能 delta、IPC 对齐、TAGE/base-only 行为差异或 BPU 替换已经完成。
+
 ### GEM5 模拟器
 
 GEM5 默认在远程 `linux` 主机运行，进入 Linux 映射路径下的 `GEM5/`。为避免误用 Linuxbrew Python 3.14 导致 `libpython3.14.so.1.0` 缺失，GEM5 构建和单测默认先限定系统 PATH：

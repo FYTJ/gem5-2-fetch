@@ -22,6 +22,29 @@
         .long RVTEST_GEM5_M5_FAIL_INSN;                                 \
 1:      j 1b;
 
+#elif defined(RVTEST_EXIT_BACKEND_WALLY)
+
+#define RVTEST_WALLY_TOHOST_SECTION                                      \
+        .pushsection .tohost,"aw",@progbits;                            \
+        .align 3;                                                       \
+        .global tohost;                                                 \
+tohost: .dword 0;                                                       \
+        .global fromhost;                                               \
+fromhost: .dword 0;                                                     \
+        .popsection;
+
+#define RVTEST_EXIT_PASS                                                 \
+        RVTEST_WALLY_TOHOST_SECTION                                      \
+        la t0, tohost;                                                  \
+        li t1, 1;                                                       \
+        sw t1, 0(t0);                                                   \
+1:      j 1b;
+
+#define RVTEST_EXIT_FAIL                                                 \
+        li a0, 1;                                                       \
+        ebreak;                                                         \
+1:      j 1b;
+
 #else
 
 #define RVTEST_EXIT_PASS                                                 \

@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
+
 STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
 
 
@@ -32,6 +34,22 @@ def test_matches(test: dict, filters: set[str]) -> bool:
         f"{test.get('suite', '')}-p-{test.get('name', '')}",
     }
     return bool(names & filters)
+
+
+def select_manifest_tests(manifest: dict, filters: set[str], suite: str | None, suite_source: Path, manifest_path: Path) -> list[dict]:
+    tests = manifest.get("tests", [])
+    suite_ids: set[str] | None = None
+    if suite == SUPPORTED_SUITE_ID:
+        suite_payload = build_supported_suite(suite_source, manifest_path)
+        suite_ids = set(suite_payload["ids"])
+    selected = []
+    for test in tests:
+        if suite_ids is not None and test.get("id") not in suite_ids:
+            continue
+        if not test_matches(test, filters):
+            continue
+        selected.append(test)
+    return selected
 
 
 def artifact_for_backend(root: Path, test: dict, backend: str) -> Path:
@@ -161,6 +179,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "l3-xiangshan" / "results.json")
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--test", action="append", default=[], help="test filter: name, suite/name, or manifest id")
+    parser.add_argument("--suite", choices=(SUPPORTED_SUITE_ID,), default=None, help="shared test suite to select before --test filtering")
+    parser.add_argument(
+        "--suite-source",
+        type=Path,
+        default=root / "build" / "validation" / "l3-gem5" / "isa" / "results.json",
+        help="GEM5 ISA result JSON used to derive supported-cross-77",
+    )
     parser.add_argument("--per-test-timeout", type=int, default=300)
     parser.add_argument("--emu", type=Path, default=None)
     parser.add_argument("--diff", type=Path, default=None)
@@ -172,7 +197,7 @@ def main(argv: list[str]) -> int:
     tests: list[dict] = []
     if args.manifest.exists():
         filters = set(args.test)
-        tests = [test for test in load_manifest(args.manifest).get("tests", []) if test_matches(test, filters)]
+        tests = select_manifest_tests(load_manifest(args.manifest), filters, args.suite, args.suite_source, args.manifest)
     if args.stage != "isa":
         reason = "XiangShan medium/SPEC stages are not wired for RV64 sample runner"
         rows = blocked_rows(tests, reason, "unsupported")
@@ -213,6 +238,8 @@ def main(argv: list[str]) -> int:
         "target": "xiangshan-emu",
         "stage": args.stage,
         "host": host,
+        "suite": args.suite,
+        "suite_source": str(args.suite_source) if args.suite else None,
         "status": status,
         "reason": reason,
         "summary": summary,

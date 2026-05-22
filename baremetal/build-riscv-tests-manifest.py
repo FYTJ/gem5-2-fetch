@@ -22,7 +22,7 @@ STATUSES = {
     "blocked_missing_artifact",
 }
 DEFAULT_SUITES = ("rv64ui", "rv64um", "rv64mi")
-DEFAULT_BACKENDS = ("xiangshan", "gem5")
+DEFAULT_BACKENDS = ("xiangshan", "gem5", "wally")
 
 
 def repo_paths() -> tuple[Path, Path, Path]:
@@ -90,6 +90,13 @@ def exit_protocol(backend: str) -> dict:
             "pass": "a0=0 then ebreak",
             "fail": "a0=1 then ebreak",
             "note": "GOOD TRAP compatible protocol for XiangShan/NEMU style runners",
+        }
+    if backend == "wally":
+        return {
+            "backend": backend,
+            "pass": "store word to symbol tohost, which Wally testbench treats as TestComplete",
+            "fail": "a0=1 then ebreak; runner classifies lack of Wally pass marker as non-pass",
+            "note": "Wally single-ELF Verilator testbench terminates on tohost store and does not signature-check single ELF tests",
         }
     raise ValueError(f"unknown exit backend: {backend}")
 

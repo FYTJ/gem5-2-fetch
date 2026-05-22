@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
+
 
 STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
 MEDIUM_MANIFEST_RECOMMENDED_PATH = "build/validation/medium-workloads/manifest.json"
@@ -106,6 +108,22 @@ def test_matches(test: dict, filters: set[str]) -> bool:
     return bool(names & filters)
 
 
+def select_manifest_tests(manifest: dict, filters: set[str], suite: str | None, suite_source: Path, manifest_path: Path) -> list[dict]:
+    tests = manifest.get("tests", [])
+    suite_ids: set[str] | None = None
+    if suite == SUPPORTED_SUITE_ID:
+        suite_payload = build_supported_suite(suite_source, manifest_path)
+        suite_ids = set(suite_payload["ids"])
+    selected = []
+    for test in tests:
+        if suite_ids is not None and test.get("id") not in suite_ids:
+            continue
+        if not test_matches(test, filters):
+            continue
+        selected.append(test)
+    return selected
+
+
 def run_one(root: Path, test: dict, output_dir: Path, timeout: int, run_known_unsupported: bool) -> dict:
     test_id = test["id"]
     backend = "gem5"
@@ -188,6 +206,31 @@ def summarize(rows: list[dict]) -> dict:
     return {"total": len(rows), "by_status": by_status, "by_suite": by_suite}
 
 
+def reuse_existing_rows(source: Path, tests: list[dict]) -> list[dict]:
+    source_payload = load_manifest(source)
+    source_by_id = {row.get("id"): row for row in source_payload.get("results", []) if row.get("id")}
+    rows = []
+    for test in tests:
+        test_id = test["id"]
+        source_row = source_by_id.get(test_id)
+        if source_row is None:
+            rows.append(
+                {
+                    "id": test_id,
+                    "suite": test["suite"],
+                    "backend": "gem5",
+                    "status": "blocked_missing_artifact",
+                    "reason": "selected test is missing from reusable GEM5 detail source",
+                    "reused_from": str(source),
+                }
+            )
+            continue
+        row = dict(source_row)
+        row["reused_from"] = str(source)
+        rows.append(row)
+    return rows
+
+
 def write_payload(output: Path, payload: dict) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -201,7 +244,7 @@ def run_isa(args: argparse.Namespace) -> int:
     root = args.repo_root.resolve()
     manifest = load_manifest(args.manifest)
     filters = set(args.test)
-    tests = [test for test in manifest.get("tests", []) if test_matches(test, filters)]
+    tests = select_manifest_tests(manifest, filters, args.suite, args.suite_source, args.manifest)
     if not tests:
         payload = {
             "schema_version": 1,
@@ -215,9 +258,12 @@ def run_isa(args: argparse.Namespace) -> int:
         }
         write_payload(args.output, payload)
         return 1
-    rows = []
-    for test in tests:
-        rows.append(run_one(root, test, args.output.parent, args.per_test_timeout, args.run_known_unsupported))
+    if args.reuse_existing:
+        rows = reuse_existing_rows(args.suite_source, tests)
+    else:
+        rows = []
+        for test in tests:
+            rows.append(run_one(root, test, args.output.parent, args.per_test_timeout, args.run_known_unsupported))
     summary = summarize(rows)
     blocking = sum(summary["by_status"].get(status, 0) for status in ("fail", "timeout", "blocked_missing_artifact", "blocked_env"))
     all_supported_pass = blocking == 0
@@ -237,6 +283,8 @@ def run_isa(args: argparse.Namespace) -> int:
         "layer": "l3",
         "target": "gem5-isa-first-layer",
         "stage": "isa",
+        "suite": args.suite,
+        "suite_source": str(args.suite_source) if args.suite else None,
         "status": status,
         "reason": reason,
         "summary": summary,
@@ -290,6 +338,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--per-test-timeout", type=int, default=5)
     parser.add_argument("--test", action="append", default=[], help="test filter: name, suite/name, or manifest id")
+    parser.add_argument("--suite", choices=(SUPPORTED_SUITE_ID,), default=None, help="shared test suite to select before --test filtering")
+    parser.add_argument(
+        "--suite-source",
+        type=Path,
+        default=root / "build" / "validation" / "l3-gem5" / "isa" / "results.json",
+        help="GEM5 ISA result JSON used to derive supported-cross-77",
+    )
+    parser.add_argument("--reuse-existing", action="store_true", help="validate selected tests against --suite-source instead of running GEM5")
     parser.add_argument("--run-known-unsupported", action="store_true", help="execute tests that are otherwise classified as known unsupported")
     args = parser.parse_args(argv)
     if args.output is None:

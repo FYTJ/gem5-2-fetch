@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""Run CORE-V Wally Verilator gates for the shared cross-target RV64 suite."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
+
+
+STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_matches(test: dict, filters: set[str]) -> bool:
+    if not filters:
+        return True
+    names = {
+        test.get("id", ""),
+        test.get("name", ""),
+        f"{test.get('suite', '')}/{test.get('name', '')}",
+        f"{test.get('suite', '')}-p-{test.get('name', '')}",
+    }
+    return bool(names & filters)
+
+
+def select_manifest_tests(manifest: dict, filters: set[str], suite: str | None, suite_source: Path, manifest_path: Path) -> list[dict]:
+    tests = manifest.get("tests", [])
+    suite_ids: set[str] | None = None
+    if suite == SUPPORTED_SUITE_ID:
+        suite_payload = build_supported_suite(suite_source, manifest_path)
+        suite_ids = set(suite_payload["ids"])
+    selected = []
+    for test in tests:
+        if suite_ids is not None and test.get("id") not in suite_ids:
+            continue
+        if not test_matches(test, filters):
+            continue
+        selected.append(test)
+    return selected
+
+
+def run_command(command: list[str], cwd: Path, log_path: Path, timeout: int, env: dict[str, str] | None = None) -> tuple[str, int | None, float]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            completed = subprocess.run(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            return ("pass" if completed.returncode == 0 else "fail"), completed.returncode, round(time.monotonic() - start, 3)
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout}s\n")
+            return "timeout", None, round(time.monotonic() - start, 3)
+
+
+def prepend_paths(env: dict[str, str], paths: list[Path]) -> None:
+    existing = [str(path) for path in paths if path.is_dir()]
+    if existing:
+        env["PATH"] = ":".join(existing + [env.get("PATH", "")])
+
+
+def wally_env(cvw: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["WALLY"] = str(cvw)
+    prepend_paths(
+        env,
+        [
+            cvw / "bin",
+            Path("/home/linuxbrew/.linuxbrew/bin"),
+            Path.home() / "spike-local" / "install" / "bin",
+            Path.home() / "spike-local" / "build",
+            Path("/usr/bin"),
+            Path("/bin"),
+        ],
+    )
+    return env
+
+
+def toolchain_diagnostics(env: dict[str, str]) -> dict:
+    path = env.get("PATH", "")
+    return {
+        "WALLY": env.get("WALLY"),
+        "tools": {
+            name: shutil.which(name, path=path)
+            for name in (
+                "python3",
+                "make",
+                "verilator",
+                "riscv64-unknown-elf-gcc",
+                "riscv64-unknown-elf-objdump",
+                "riscv64-unknown-elf-objcopy",
+                "elf2hex",
+                "extractFunctionRadix.sh",
+            )
+        },
+    }
+
+
+def artifact_path(root: Path, raw: str) -> Path:
+    path = Path(raw)
+    if path.exists():
+        return path
+    marker = "baremetal/"
+    if marker in raw:
+        return root / marker.rstrip("/") / raw.split(marker, 1)[1]
+    return path
+
+
+def build_wally_manifest(root: Path, tests: list[dict], output_dir: Path, timeout: int, env: dict[str, str]) -> tuple[dict | None, dict]:
+    manifest_path = output_dir / "wally-build-manifest.json"
+    command = [
+        str(root / "baremetal" / "build-riscv-tests-manifest.sh"),
+        "--backend",
+        "wally",
+        "--manifest",
+        str(manifest_path),
+        "--timeout",
+        str(timeout),
+    ]
+    for test in tests:
+        command.extend(["--test", f"{test['suite']}/{test['name']}"])
+    log_path = output_dir / "logs" / "wally-build-manifest.log"
+    status, rc, elapsed = run_command(command, root, log_path, timeout=max(timeout * max(len(tests), 1), 120), env=env)
+    info = {
+        "status": status,
+        "return_code": rc,
+        "host_time": elapsed,
+        "command": command,
+        "log_path": str(log_path),
+        "manifest": str(manifest_path),
+    }
+    if status != "pass" or not manifest_path.exists():
+        return None, info
+    return load_json(manifest_path), info
+
+
+def compile_wally(root: Path, cvw: Path, output_dir: Path, args: argparse.Namespace, env: dict[str, str]) -> dict:
+    log_path = output_dir / "logs" / "wally-verilator-compile.log"
+    command = [
+        "make",
+        "-C",
+        str(cvw / "sim" / "verilator"),
+        f"WALLYCONF={args.wally_config}",
+        "TESTBENCH=testbench",
+        f"VERILATOR_FLAGS={args.verilator_flags}",
+    ]
+    status, rc, elapsed = run_command(command, root, log_path, args.compile_timeout, env=env)
+    binary = cvw / "sim" / "verilator" / "wkdir" / f"{args.wally_config}_testbench" / "Vtestbench"
+    if status == "pass" and not binary.exists():
+        status = "blocked_missing_artifact"
+    return {
+        "status": status,
+        "return_code": rc,
+        "host_time": elapsed,
+        "command": command,
+        "log_path": str(log_path),
+        "binary": str(binary),
+    }
+
+
+def ensure_sidecars(root: Path, cvw: Path, elf: Path, log) -> dict:
+    memfile = Path(str(elf) + ".memfile")
+    objdump = Path(str(elf) + ".objdump")
+    objdump_addr = Path(str(elf) + ".objdump.addr")
+    objdump_lab = Path(str(elf) + ".objdump.lab")
+    commands = [
+        [sys.executable, str(cvw / "bin" / "elf2hex"), str(elf), str(memfile)],
+        ["riscv64-unknown-elf-objdump", "-S", "-D", str(elf)],
+        [str(cvw / "bin" / "extractFunctionRadix.sh"), str(objdump)],
+    ]
+    log.write("$ " + " ".join(commands[0]) + "\n")
+    completed = subprocess.run(commands[0], cwd=root, stdout=log, stderr=subprocess.STDOUT, check=False)
+    if completed.returncode != 0:
+        return {"status": "fail", "reason": "elf2hex sidecar generation failed", "return_code": completed.returncode}
+    log.write("$ " + " ".join(commands[1]) + f" > {objdump}\n")
+    with objdump.open("w", encoding="utf-8") as objdump_out:
+        completed = subprocess.run(commands[1], cwd=root, stdout=objdump_out, stderr=log, check=False)
+    if completed.returncode != 0:
+        return {"status": "fail", "reason": "objdump sidecar generation failed", "return_code": completed.returncode}
+    log.write("$ " + " ".join(commands[2]) + "\n")
+    completed = subprocess.run(commands[2], cwd=root, stdout=log, stderr=subprocess.STDOUT, check=False)
+    if completed.returncode != 0:
+        return {"status": "fail", "reason": "function radix sidecar generation failed", "return_code": completed.returncode}
+    missing = [path for path in (memfile, objdump_addr, objdump_lab) if not path.exists()]
+    if missing:
+        return {"status": "blocked_missing_artifact", "reason": "missing generated Wally sidecars", "missing": [str(path) for path in missing]}
+    return {
+        "status": "pass",
+        "memfile": str(memfile),
+        "objdump": str(objdump),
+        "objdump_addr": str(objdump_addr),
+        "objdump_lab": str(objdump_lab),
+    }
+
+
+def classify_log(log_path: Path, run_status: str, return_code: int | None) -> tuple[str, str]:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    if run_status == "timeout":
+        return "timeout", "Wally Verilator run timed out before tohost completion"
+    if "Single Elf file tests are not signatured verified." in text:
+        return "pass", "Wally tohost completion observed for single ELF"
+    if "Reached" in text and "instructions" in text:
+        return "fail", "instruction limit reached before Wally tohost completion"
+    if "Error:" in text or "%Error" in text or "$fatal" in text:
+        return "fail", "Wally log contains error marker"
+    if return_code not in (0, None):
+        return "fail", "Wally Verilator returned non-zero"
+    return "unsupported", "Wally finished without recognized tohost pass marker"
+
+
+def run_one(root: Path, cvw: Path, binary: Path, test: dict, output_dir: Path, timeout: int, instr_limit: int, env: dict[str, str]) -> dict:
+    test_id = test["id"]
+    raw_elf = test.get("artifacts_by_backend", {}).get("wally", {}).get("elf")
+    if not raw_elf:
+        return {
+            "id": test_id,
+            "suite": test["suite"],
+            "backend": "wally",
+            "status": "blocked_missing_artifact",
+            "reason": "manifest entry lacks Wally backend ELF artifact",
+        }
+    elf = artifact_path(root, raw_elf)
+    if not elf.exists():
+        return {
+            "id": test_id,
+            "suite": test["suite"],
+            "backend": "wally",
+            "status": "blocked_missing_artifact",
+            "reason": "Wally backend ELF artifact is missing",
+            "elf": str(elf),
+        }
+    log_path = output_dir / "logs" / f"{test_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [str(binary), f"+TEST={test_id}", f"+ElfFile={elf}", f"+INSTR_LIMIT={instr_limit}"]
+    start = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        sidecars = ensure_sidecars(root, cvw, elf, log)
+        if sidecars.get("status") != "pass":
+            return {
+                "id": test_id,
+                "suite": test["suite"],
+                "backend": "wally",
+                "status": sidecars["status"],
+                "reason": sidecars["reason"],
+                "elf": str(elf),
+                "log_path": str(log_path),
+                "sidecars": sidecars,
+                "host_time": round(time.monotonic() - start, 3),
+            }
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            completed = subprocess.run(command, cwd=cvw / "sim" / "verilator", env=env, stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            run_status = "pass" if completed.returncode == 0 else "fail"
+            rc = completed.returncode
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout}s\n")
+            run_status = "timeout"
+            rc = None
+    status, reason = classify_log(log_path, run_status, rc)
+    needs = test.get("needs", [])
+    if status == "fail" and "instruction limit" in reason and "ecall" in needs:
+        reason = "instruction limit reached before Wally tohost completion; ecall/trap-sensitive test did not reach the expected pass path"
+    return {
+        "id": test_id,
+        "suite": test["suite"],
+        "backend": "wally",
+        "status": status,
+        "reason": reason,
+        "needs": needs,
+        "return_code": rc,
+        "runner_status": run_status,
+        "command": command,
+        "elf": str(elf),
+        "log_path": str(log_path),
+        "sidecars": sidecars,
+        "host_time": round(time.monotonic() - start, 3),
+    }
+
+
+def blocked_rows(tests: list[dict], status: str, reason: str) -> list[dict]:
+    return [
+        {
+            "id": test["id"],
+            "suite": test["suite"],
+            "backend": "wally",
+            "status": status,
+            "reason": reason,
+        }
+        for test in tests
+    ]
+
+
+def summarize(rows: list[dict]) -> dict:
+    by_status = {status: 0 for status in STATUS_ENUM}
+    by_suite: dict[str, dict[str, int]] = {}
+    for row in rows:
+        status = row["status"]
+        by_status[status] = by_status.get(status, 0) + 1
+        suite = row.get("suite", "unknown")
+        by_suite.setdefault(suite, {s: 0 for s in STATUS_ENUM})
+        by_suite[suite][status] = by_suite[suite].get(status, 0) + 1
+    return {"total": len(rows), "by_status": by_status, "by_suite": by_suite}
+
+
+def write_payload(output: Path, payload: dict) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload["summary"], indent=2, sort_keys=True))
+    print(f"results={output}")
+    print(f"VALIDATION_STATUS={payload['status']}")
+    print(f"VALIDATION_REASON={payload['reason']}")
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", choices=("isa",), default="isa")
+    parser.add_argument("--manifest", type=Path, default=root / "baremetal" / "riscv-tests" / "isa" / "build" / "manifest.json")
+    parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "l3-wally" / "isa" / "results.json")
+    parser.add_argument("--repo-root", type=Path, default=root)
+    parser.add_argument("--test", action="append", default=[], help="test filter: name, suite/name, or manifest id")
+    parser.add_argument("--suite", choices=(SUPPORTED_SUITE_ID,), default=None, help="shared test suite to select before --test filtering")
+    parser.add_argument(
+        "--suite-source",
+        type=Path,
+        default=root / "build" / "validation" / "l3-gem5" / "isa" / "results.json",
+        help="GEM5 ISA result JSON used to derive supported-cross-77",
+    )
+    parser.add_argument("--cvw", type=Path, default=root / "build" / "external" / "cvw")
+    parser.add_argument("--wally-config", default="rv64gc")
+    parser.add_argument("--verilator-flags", default="--assert --no-trace-top --stats -Wno-IMPLICITSTATIC")
+    parser.add_argument("--build-timeout", type=int, default=60)
+    parser.add_argument("--compile-timeout", type=int, default=900)
+    parser.add_argument("--per-test-timeout", type=int, default=60)
+    parser.add_argument("--instr-limit", type=int, default=200000)
+    parser.add_argument("--skip-build", action="store_true", help="use existing Wally artifacts from --manifest")
+    args = parser.parse_args(argv)
+
+    root = args.repo_root.resolve()
+    cvw = args.cvw.resolve()
+    manifest = load_json(args.manifest)
+    tests = select_manifest_tests(manifest, set(args.test), args.suite, args.suite_source, args.manifest)
+    env = wally_env(cvw)
+    diagnostics = toolchain_diagnostics(env)
+    build_info = None
+    compile_info = None
+
+    if not tests:
+        rows = []
+        status = "blocked_missing_artifact"
+        reason = "no manifest entries matched requested tests"
+    elif not cvw.exists():
+        rows = blocked_rows(tests, "blocked_missing_artifact", "CORE-V Wally checkout is missing")
+        status = "blocked_missing_artifact"
+        reason = "CORE-V Wally checkout is missing"
+    elif not args.skip_build:
+        wally_manifest, build_info = build_wally_manifest(root, tests, args.output.parent, args.build_timeout, env)
+        if wally_manifest is None:
+            rows = blocked_rows(tests, "blocked_env", "failed to build Wally backend riscv-tests artifacts")
+            status = "blocked_env"
+            reason = "failed to build Wally backend riscv-tests artifacts"
+        else:
+            tests = wally_manifest.get("tests", [])
+            compile_info = compile_wally(root, cvw, args.output.parent, args, env)
+            if compile_info["status"] != "pass":
+                rows = blocked_rows(tests, compile_info["status"], "failed to compile Wally Verilator testbench")
+                status = compile_info["status"]
+                reason = "failed to compile Wally Verilator testbench"
+            else:
+                binary = Path(compile_info["binary"])
+                rows = [run_one(root, cvw, binary, test, args.output.parent, args.per_test_timeout, args.instr_limit, env) for test in tests]
+                summary = summarize(rows)
+                status = "pass" if summary["total"] and summary["by_status"].get("pass", 0) == summary["total"] else "fail"
+                reason = "all selected Wally entries passed" if status == "pass" else "selected Wally entries did not fully pass"
+    else:
+        compile_info = compile_wally(root, cvw, args.output.parent, args, env)
+        if compile_info["status"] != "pass":
+            rows = blocked_rows(tests, compile_info["status"], "failed to compile Wally Verilator testbench")
+            status = compile_info["status"]
+            reason = "failed to compile Wally Verilator testbench"
+        else:
+            binary = Path(compile_info["binary"])
+            rows = [run_one(root, cvw, binary, test, args.output.parent, args.per_test_timeout, args.instr_limit, env) for test in tests]
+            summary = summarize(rows)
+            status = "pass" if summary["total"] and summary["by_status"].get("pass", 0) == summary["total"] else "fail"
+            reason = "all selected Wally entries passed" if status == "pass" else "selected Wally entries did not fully pass"
+
+    summary = summarize(rows)
+    payload = {
+        "schema_version": 1,
+        "layer": "l3",
+        "target": "wally-verilator",
+        "stage": args.stage,
+        "suite": args.suite,
+        "suite_source": str(args.suite_source) if args.suite else None,
+        "status": status,
+        "reason": reason,
+        "summary": summary,
+        "results": rows,
+        "build": build_info,
+        "compile": compile_info,
+        "toolchain": diagnostics,
+        "exit_protocol": {
+            "pass": "Wally backend test writes tohost; Wally testbench prints single-ELF completion and finishes",
+            "fail": "fail path does not write tohost; timeout/instruction-limit/non-zero/error marker is non-pass",
+        },
+    }
+    write_payload(args.output, payload)
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

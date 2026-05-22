@@ -200,6 +200,73 @@ def check_eda00_smoke_overrides_local_guard(collector) -> None:
         assert gate["effective_status"] == "pass", gate
 
 
+def check_xiangshan_complete_suite_overrides_smoke(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-xiangshan/eda00-smoke/results.json",
+            {"status": "pass", "reason": "eda-00 smoke passed", "summary": {"total": 5}},
+        )
+        write_json(
+            root,
+            "build/validation/l3-xiangshan/isa/results.json",
+            {"status": "fail", "reason": "complete suite failed", "summary": {"total": 77, "by_status": {"pass": 76, "fail": 1}}},
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["xiangshan_l3_status"] == "fail", detail
+        assert detail["xiangshan_l3_source"] == "build/validation/l3-xiangshan/isa/results.json", detail
+        assert detail["xiangshan_l3_summary"]["total"] == 77, detail
+        gate = next(row for row in payload["gates"] if row["target"] == "xiangshan-emu-isa")
+        assert gate["effective_status"] == "fail", gate
+
+
+def check_wally_l3_suite_is_separate_from_matrix(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/wally-isa-matrix/results.json",
+            {"status": "pass", "matrix": {"summary": {"total": 84, "by_status": {"needs_wally_harness_support": 77}}}},
+        )
+        write_json(
+            root,
+            "build/validation/l3-wally/isa/results.json",
+            {"status": "fail", "reason": "complete Wally suite failed", "summary": {"total": 77, "by_status": {"pass": 76, "fail": 1}}},
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["wally_l3_isa_status"] == "fail", detail
+        assert detail["wally_l3_isa_summary"]["total"] == 77, detail
+        gate = next(row for row in payload["gates"] if row["target"] == "wally-verilator-isa")
+        assert gate["effective_status"] == "fail", gate
+        assert gate["source"] == "build/validation/l3-wally/isa/results.json", gate
+
+
+def check_gem5_supported_suite_overrides_full_manifest(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/isa/results.json",
+            {"status": "pass", "summary": {"total": 84, "by_status": {"pass": 79, "unsupported": 5}}},
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5/supported-cross-77/results.json",
+            {"status": "pass", "summary": {"total": 77, "by_status": {"pass": 77, "unsupported": 0}}},
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["gem5_l3_isa_source"] == "build/validation/l3-gem5/supported-cross-77/results.json", detail
+        assert detail["gem5_l3_isa_summary"]["total"] == 77, detail
+        assert detail["gem5_l3_isa_summary"]["by_status"]["unsupported"] == 0, detail
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-isa-first-layer")
+        assert gate["effective_status"] == "pass", gate
+        assert gate["source"] == "build/validation/l3-gem5/supported-cross-77/results.json", gate
+
+
 def main() -> int:
     collector = load_collector()
     checks = [
@@ -210,6 +277,9 @@ def main() -> int:
         check_spec2006_missing_artifact_contract,
         check_medium_missing_artifact_is_not_unsupported,
         check_eda00_smoke_overrides_local_guard,
+        check_xiangshan_complete_suite_overrides_smoke,
+        check_wally_l3_suite_is_separate_from_matrix,
+        check_gem5_supported_suite_overrides_full_manifest,
     ]
     for check in checks:
         check(collector)

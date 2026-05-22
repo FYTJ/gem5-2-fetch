@@ -14,6 +14,15 @@ tools/validation/collect-validation-results --output build/validation/final-summ
 
 `collect-validation-results` 只读取已有 JSON 结果并生成总表，用于 Task 006 和 Phase C 汇总。它不会重跑仿真，也不会把 L3 timeout、Wally benchmark 环境阻塞或 SPEC checkpoint 缺失改写为通过结论。汇总中会保留 `harness_status`、`detail_status` 和 `effective_status`；总表按 `effective_status` 计数，若顶层状态与细节状态冲突，会写入 `inconsistent_statuses`。当前汇总器优先读取本轮 `run-validation` 输出目录，并会把直接运行的 L3 detail JSON 作为 gate 纳入统计，避免旧 task 产物覆盖当前结果。XiangShan L3 的 direct detail 优先级是 `build/validation/l3-xiangshan/eda00-smoke/results.json` 高于旧的 `local-guard`，用于保存通过 `paper-RAG/tools/ssh-eda00-fast` 实际尝试 `eda-00` 登录后的最新证据。
 
+`supported-cross-77` 是当前默认轻量全系统 RV64 suite。它从 `build/validation/l3-gem5/isa/results.json` 中抽取 GEM5 `status=pass` 的 79 项，默认排除 5 个 GEM5 known unsupported 项，并额外排除 Wally/XiangShan 完整 direct-run 中已知不通过的 `rv64mi-p-scall` 与 `rv64mi-p-pmpaddr`，最终形成 77 项。GEM5 summary 优先读取 `build/validation/l3-gem5/supported-cross-77/results.json`；Wally summary 优先读取 `build/validation/l3-wally/isa/results.json`；XiangShan summary 优先读取 `build/validation/l3-xiangshan/isa/results.json`，只有完整 suite 不存在时才回退到 `eda00-smoke` / `local-guard`。
+
+```bash
+tools/validation/select-rv64-supported-suite --suite supported-cross-77 --format json --summary
+tools/validation/run-l3-gem5 --stage isa --suite supported-cross-77 --reuse-existing --output build/validation/l3-gem5/supported-cross-77/results.json
+tools/validation/run-l3-wally --stage isa --suite supported-cross-77 --output build/validation/l3-wally/isa/results.json
+tools/validation/run-l3-xiangshan --stage isa --suite supported-cross-77 --output build/validation/l3-xiangshan/isa/results.json
+```
+
 运行耗时和 DUT 性能分开汇总：`host_time` 只进入 `run_time_summary`；`performance_summary.performance_valid` 只有在 correctness-pass workload 同时提供 `simInsts`、`instrCnt`、`cycles`、`IPC` 时才为 true。timeout/fail workload 的 `stats_path` 仅作为 debug artifact。
 
 状态与性能口径回归检查：

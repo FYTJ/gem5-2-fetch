@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Select the shared cross-target RV64 lightweight full-system suite."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from rv64_supported_suite import (
+    SUPPORTED_SUITE_ID,
+    build_supported_suite,
+    default_gem5_results_path,
+    default_manifest_path,
+)
+
+
+def write_ids(payload: dict) -> None:
+    for test_id in payload["ids"]:
+        print(test_id)
+
+
+def write_markdown(payload: dict) -> None:
+    summary = payload["summary"]
+    print(f"# {payload['suite']}")
+    print()
+    print(f"- source_suite: `{payload.get('source_suite')}`")
+    print(f"- source: `{payload['source']}`")
+    print(f"- total: `{summary['total']}`")
+    print("- by_suite:")
+    for suite, count in summary["by_suite"].items():
+        print(f"  - `{suite}`: `{count}`")
+    print("- excluded_known_unsupported:")
+    for row in payload["excluded_known_unsupported"]:
+        print(f"  - `{row['id']}`: {row['reason']}")
+    print("- excluded_cross_target_nonpass:")
+    for row in payload["excluded_cross_target_nonpass"]:
+        print(f"  - `{row['id']}`: {row['reason']}")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", default=SUPPORTED_SUITE_ID, choices=(SUPPORTED_SUITE_ID,))
+    parser.add_argument("--gem5-results", type=Path, default=default_gem5_results_path())
+    parser.add_argument("--manifest", type=Path, default=default_manifest_path())
+    parser.add_argument("--format", choices=("ids", "json", "markdown"), default="ids")
+    parser.add_argument("--summary", action="store_true", help="kept for explicit summary-oriented invocations; JSON and Markdown always include it")
+    parser.add_argument("--no-strict", action="store_true", help="allow drift from the current 77-test contract")
+    args = parser.parse_args(argv)
+    try:
+        payload = build_supported_suite(args.gem5_results, args.manifest, strict=not args.no_strict)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if args.format == "ids":
+        write_ids(payload)
+    elif args.format == "markdown":
+        write_markdown(payload)
+    else:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

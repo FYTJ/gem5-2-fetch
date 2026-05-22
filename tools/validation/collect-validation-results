@@ -43,9 +43,12 @@ DETAIL_RESULT_PATHS = {
     "wally_prepare": "build/validation/wally-prepare/results.json",
     "wally_isa_matrix": "build/validation/wally-isa-matrix/results.json",
     "wally_benchmark": "build/validation/wally-benchmark/results.json",
+    "wally_l3_isa": "build/validation/l3-wally/isa/results.json",
+    "gem5_l3_supported_suite": "build/validation/l3-gem5/supported-cross-77/results.json",
     "gem5_l3_isa": "build/validation/l3-gem5/isa/results.json",
     "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
     "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
+    "xiangshan_l3_isa": "build/validation/l3-xiangshan/isa/results.json",
     "xiangshan_l3_eda00_smoke": "build/validation/l3-xiangshan/eda00-smoke/results.json",
     "xiangshan_l3_local_blocker": "build/validation/l3-xiangshan/local-guard/results.json",
 }
@@ -101,21 +104,36 @@ def flatten_harness_results(root: Path) -> list[dict[str, Any]]:
 
 
 def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> list[dict[str, Any]]:
+    gem5_l3 = gem5_l3_isa_detail(details)
+    wally_l3 = details.get("wally_l3_isa", {})
     xiangshan_l3 = xiangshan_l3_detail(details)
     specs = (
-        ("gem5_l3_isa", "l3", "gem5-isa-first-layer", "linux", "complete rv64ui/rv64um/rv64mi manifest"),
+        ("gem5_l3", "l3", "gem5-isa-first-layer", "linux", "supported-cross-77 RV64 suite"),
+        ("wally_l3_isa", "l3", "wally-verilator-isa", "linux", "supported-cross-77 RV64 suite"),
         ("gem5_l3_medium", "l3", "gem5-medium", "linux", "CoreMark/Dhrystone/microbench"),
         ("gem5_l3_spec2006", "l3", "spec2006-checkpoint", "linux/eda-00", "SPEC2006 checkpoint manifest"),
-        ("xiangshan_l3", "l3", "xiangshan-emu-isa", "eda-00", "XiangShan eda-00 smoke / complete rv64ui/rv64um/rv64mi manifest"),
+        ("xiangshan_l3", "l3", "xiangshan-emu-isa", "eda-00", "supported-cross-77 RV64 suite"),
     )
     rows = []
     for key, layer, target, host, workload in specs:
         if target in existing_targets:
             continue
-        if key == "xiangshan_l3":
+        if key == "gem5_l3":
+            payload = gem5_l3
+            source = (
+                DETAIL_RESULT_PATHS["gem5_l3_supported_suite"]
+                if details.get("gem5_l3_supported_suite", {}).get("status") not in {None, "missing"}
+                else DETAIL_RESULT_PATHS["gem5_l3_isa"]
+            )
+        elif key == "wally_l3_isa":
+            payload = wally_l3
+            source = DETAIL_RESULT_PATHS["wally_l3_isa"]
+        elif key == "xiangshan_l3":
             payload = xiangshan_l3
             source = (
-                DETAIL_RESULT_PATHS["xiangshan_l3_eda00_smoke"]
+                DETAIL_RESULT_PATHS["xiangshan_l3_isa"]
+                if details.get("xiangshan_l3_isa", {}).get("status") not in {None, "missing"}
+                else DETAIL_RESULT_PATHS["xiangshan_l3_eda00_smoke"]
                 if details.get("xiangshan_l3_eda00_smoke", {}).get("status") not in {None, "missing"}
                 else DETAIL_RESULT_PATHS["xiangshan_l3_local_blocker"]
             )
@@ -155,10 +173,20 @@ def load_details(root: Path) -> dict[str, Any]:
 
 
 def xiangshan_l3_detail(details: dict[str, Any]) -> dict[str, Any]:
+    complete_suite = details.get("xiangshan_l3_isa", {})
+    if complete_suite.get("status") not in {None, "missing"}:
+        return complete_suite
     eda00_smoke = details.get("xiangshan_l3_eda00_smoke", {})
     if eda00_smoke.get("status") not in {None, "missing"}:
         return eda00_smoke
     return details.get("xiangshan_l3_local_blocker", {})
+
+
+def gem5_l3_isa_detail(details: dict[str, Any]) -> dict[str, Any]:
+    supported_suite = details.get("gem5_l3_supported_suite", {})
+    if supported_suite.get("status") not in {None, "missing"}:
+        return supported_suite
+    return details.get("gem5_l3_isa", {})
 
 
 def normalize_status(status: Any) -> str | None:
@@ -179,6 +207,8 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("wally_benchmark", {}).get("benchmark", {}).get("status")
     if target == "wally-isa-matrix":
         return details.get("wally_isa_matrix", {}).get("status")
+    if target == "wally-verilator-isa":
+        return details.get("wally_l3_isa", {}).get("status")
     if target == "wally-prepare":
         return details.get("wally_prepare", {}).get("status")
     if target == "gem5-bpu-unit":
@@ -190,7 +220,7 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
     if target == "xiangshan-linux-bpu-scalatest":
         return details.get("xiangshan_bpu_scalatest", {}).get("status")
     if target == "gem5-isa-first-layer":
-        return details.get("gem5_l3_isa", {}).get("status")
+        return gem5_l3_isa_detail(details).get("status")
     if target == "gem5-medium":
         return details.get("gem5_l3_medium", {}).get("status")
     if target == "spec2006-checkpoint":
@@ -262,7 +292,7 @@ def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) ->
                     "reason": "stats_path is debug-only because workload did not provide a full pass+metrics performance sample",
                 }
             )
-    l3_results = details.get("gem5_l3_isa", {}).get("results", [])
+    l3_results = gem5_l3_isa_detail(details).get("results", [])
     for row in l3_results:
         if row.get("stats_path") and row.get("status") != "pass":
             debug_artifacts.append(
@@ -294,7 +324,8 @@ def build_summary(root: Path) -> dict[str, Any]:
     manifest_summary = details.get("manifest", {}).get("summary", {})
     wally_matrix = details.get("wally_isa_matrix", {}).get("matrix", {}).get("summary", {})
     wally_benchmark = details.get("wally_benchmark", {}).get("benchmark", {})
-    gem5_l3_isa = details.get("gem5_l3_isa", {})
+    wally_l3_isa = details.get("wally_l3_isa", {})
+    gem5_l3_isa = gem5_l3_isa_detail(details)
     xiangshan_l3 = xiangshan_l3_detail(details)
     payload = {
         "schema_version": 1,
@@ -311,8 +342,15 @@ def build_summary(root: Path) -> dict[str, Any]:
             "wally_prepare_status": details.get("wally_prepare", {}).get("status"),
             "wally_matrix_summary": wally_matrix,
             "wally_benchmark_status": wally_benchmark.get("status"),
+            "wally_l3_isa_status": wally_l3_isa.get("status"),
+            "wally_l3_isa_summary": wally_l3_isa.get("summary"),
             "gem5_l3_isa_status": gem5_l3_isa.get("status"),
             "gem5_l3_isa_summary": gem5_l3_isa.get("summary"),
+            "gem5_l3_isa_source": (
+                DETAIL_RESULT_PATHS["gem5_l3_supported_suite"]
+                if details.get("gem5_l3_supported_suite", {}).get("status") not in {None, "missing"}
+                else DETAIL_RESULT_PATHS["gem5_l3_isa"]
+            ),
             "gem5_l3_medium_status": details.get("gem5_l3_medium", {}).get("status"),
             "gem5_l3_medium_missing_artifact": details.get("gem5_l3_medium", {}).get("missing_artifact"),
             "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),
@@ -320,7 +358,12 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_spec2006_manifest_contract": details.get("gem5_l3_spec2006", {}).get("manifest_contract"),
             "xiangshan_l3_status": xiangshan_l3.get("status"),
             "xiangshan_l3_reason": xiangshan_l3.get("reason"),
-            "xiangshan_l3_source": xiangshan_l3.get("source"),
+            "xiangshan_l3_summary": xiangshan_l3.get("summary"),
+            "xiangshan_l3_source": (
+                DETAIL_RESULT_PATHS["xiangshan_l3_isa"]
+                if details.get("xiangshan_l3_isa", {}).get("status") not in {None, "missing"}
+                else xiangshan_l3.get("source")
+            ),
         },
         "run_time_summary": run_time_summary(gates),
         "performance_summary": performance_summary(gates, details),
