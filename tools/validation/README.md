@@ -16,6 +16,8 @@ tools/validation/collect-validation-results --output build/validation/final-summ
 
 `supported-cross-77` 是当前默认轻量全系统 RV64 suite。它从 `build/validation/l3-gem5/isa/results.json` 中抽取 GEM5 `status=pass` 的 79 项，默认排除 5 个 GEM5 known unsupported 项，并额外排除 Wally/XiangShan 完整 direct-run 中已知不通过的 `rv64mi-p-scall` 与 `rv64mi-p-pmpaddr`，最终形成 77 项。GEM5 summary 优先读取 `build/validation/l3-gem5/supported-cross-77/results.json`；Wally summary 优先读取 `build/validation/l3-wally/isa/results.json`；XiangShan summary 优先读取 `build/validation/l3-xiangshan/isa/results.json`，只有完整 suite 不存在时才回退到 `eda00-smoke` / `local-guard`。
 
+GEM5 enable-difftest 在 `eda-00` 上使用独立结果路径 `build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json`，汇总目标名为 `gem5-isa-difftest-eda00`。该结果不会覆盖旧的非 difftest `gem5-isa-first-layer`，用于明确区分“GEM5 raw-cpt L3可运行”和“GEM5+ref so difftest可运行”这两种证明边界。
+
 ```bash
 tools/validation/select-rv64-supported-suite --suite supported-cross-77 --format json --summary
 tools/validation/run-l3-gem5 --stage isa --suite supported-cross-77 --reuse-existing --output build/validation/l3-gem5/supported-cross-77/results.json

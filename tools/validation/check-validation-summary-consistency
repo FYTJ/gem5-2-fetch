@@ -267,6 +267,38 @@ def check_gem5_supported_suite_overrides_full_manifest(collector) -> None:
         assert gate["source"] == "build/validation/l3-gem5/supported-cross-77/results.json", gate
 
 
+def check_gem5_enable_difftest_eda00_is_separate_gate(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/supported-cross-77/results.json",
+            {"status": "pass", "summary": {"total": 77, "by_status": {"pass": 77}}},
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json",
+            {
+                "status": "fail",
+                "reason": "enable-difftest suite failed",
+                "summary": {"total": 77, "by_status": {"fail": 77}},
+                "results": [
+                    {"id": "rv64ui-p-add", "status": "fail", "stats_path": "m5out/rv64ui-p-add/stats.txt"}
+                ],
+            },
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["gem5_l3_isa_status"] == "pass", detail
+        assert detail["gem5_l3_difftest_eda00_status"] == "fail", detail
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-isa-difftest-eda00")
+        assert gate["effective_status"] == "fail", gate
+        assert gate["host"] == "eda-00", gate
+        assert gate["source"] == "build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json", gate
+        debug = payload["performance_summary"]["debug_artifacts"]
+        assert any(row.get("target") == "gem5-isa-difftest-eda00" for row in debug), debug
+
+
 def main() -> int:
     collector = load_collector()
     checks = [
@@ -280,6 +312,7 @@ def main() -> int:
         check_xiangshan_complete_suite_overrides_smoke,
         check_wally_l3_suite_is_separate_from_matrix,
         check_gem5_supported_suite_overrides_full_manifest,
+        check_gem5_enable_difftest_eda00_is_separate_gate,
     ]
     for check in checks:
         check(collector)

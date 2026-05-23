@@ -162,7 +162,7 @@ rv64mi-p-zicntr
 
 ### GEM5 模拟器
 
-GEM5 默认在远程 `linux` 主机运行，进入 Linux 映射路径下的 `GEM5/`。为避免误用 Linuxbrew Python 3.14 导致 `libpython3.14.so.1.0` 缺失，GEM5 构建和单测默认先限定系统 PATH：
+GEM5 的BTB/TAGE模块级单测和禁用difftest的轻量smoke仍可默认在远程 `linux` 主机运行，进入 Linux 映射路径下的 `GEM5/`。为避免误用 Linuxbrew Python 3.14 导致 `libpython3.14.so.1.0` 缺失，GEM5 构建和单测默认先限定系统 PATH：
 
 ```bash
 ssh -tt linux 'bash -ic '\''
@@ -197,6 +197,106 @@ export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 - `tage.test.opt` / `mgsc.test.opt` 是 BTBTAGE/MGSC 模块级快速验证，适合每次修改后先跑。
 - `kmhv3.py` bounded smoke 只证明 GEM5、配置脚本、raw binary 输入和受控退出链路可用。
 - `--disable-difftest` 与 `--maxinsts=10` 明确说明它不是完整程序级 pass、不是 GEM5 difftest，也不是性能对齐或性能下降 delta 证据。
+
+### GEM5 enable-difftest on eda-00
+
+GEM5 enable-difftest不能在远程 `linux` 主机上作为有效验证口径运行：`linux` 是 `aarch64`，而仓内 `XiangShan/ready-to-run/riscv64-nemu-interpreter-so` 和 `riscv64-spike-so` 是 `x86-64` shared object。需要验证GEM5+ref so difftest时，默认使用 q2 的 `eda-00` 运行节点。
+
+节点纪律：
+
+- `qimeng2` 登录节点只用于建立ControlMaster、同步文件和轻量检查；不要在登录节点构建或仿真。
+- 构建、GEM5仿真和77项suite必须进入 `eda-00`，长任务必须放在tmux中。
+- 远端项目目录固定为 `/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test`。
+- 不要把密码、TOTP、cookie、storage state或其它私密凭据写入仓库、日志或远端脚本。
+
+当前已验证的GEM5构建环境：
+
+```bash
+cd /nfs_global/I/qimeng2/zhuyanbo/module-deletion-test
+source /nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-gem5-py311/bin/activate
+export PATH=/nfs_global/I/qimeng2/zhuyanbo/module-deletion-test/.cache/bin:/tools/cluster-software/gcc/gcc-9.3.0/bin:$PATH
+export CC=zyb-gcc-gem5
+export CXX=zyb-g++-gem5
+export BOOST_ROOT=/workspace/I/qimeng2/anaconda3
+export CPATH=/workspace/I/qimeng2/anaconda3/include:/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-verilator/include:${CPATH:-}
+export LIBRARY_PATH=/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-verilator/lib:/workspace/I/qimeng2/anaconda3/lib:${LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-verilator/lib:/workspace/I/qimeng2/anaconda3/lib:${LD_LIBRARY_PATH:-}
+```
+
+该环境的含义：
+
+- Python使用 `/nfs_global/I/qimeng2/zhuyanbo/envs/module-deletion-test-gem5-py311`，当前版本为 `Python 3.11.15`。
+- SCons安装在该py311环境中。
+- C/C++使用 `/tools/cluster-software/gcc/gcc-9.3.0/bin`。
+- Boost使用 `/workspace/I/qimeng2/anaconda3` 中的Boost 1.82。
+- `LD_LIBRARY_PATH` 必须同时包含 `module-deletion-test-verilator/lib` 和 `/workspace/I/qimeng2/anaconda3/lib`，否则 `gem5.opt` 会回退到系统 `libstdc++` / `libpython` 并出现版本缺失。
+- `.cache/bin/zyb-gcc-gem5` 和 `.cache/bin/zyb-g++-gem5` 是当前远端工作副本中的构建wrapper，用于补齐include/lib路径并过滤CentOS7/GCC9不适用的warning-as-error参数。
+- `.cache/include/gem5-centos7-compat.h` 将 `memfd_create` 映射到 `syscall(SYS_memfd_create, ...)`，用于兼容 `eda-00` 的glibc 2.17。
+
+构建命令：
+
+```bash
+cd /nfs_global/I/qimeng2/zhuyanbo/module-deletion-test/GEM5
+scons build/RISCV/gem5.opt -j8
+```
+
+当前成功构建证据：
+
+- 构建日志：`build/validation/eda00-gem5-build/build-py311-v9.log`
+- 构建返回码：`0`
+- 构建时间：`2026-05-23T02:36:05+0800` 到 `2026-05-23T02:47:01+0800`
+- 二进制：`GEM5/build/RISCV/gem5.opt`
+- `file`：x86-64 ELF
+- `ldd`：在上述 `LD_LIBRARY_PATH` 下无 `not found`
+- `gem5.opt --help`：返回码 `0`
+
+注意：当前GEM5工作副本为了通过GCC9构建，已删除 `GEM5/src/mem/cache/prefetch/cdp.hh` 中 `CDP::~CDP()` 对 `Queued::~Queued()` 的显式调用。C++会自动析构基类；保留该调用会导致GCC9编译失败，并有重复析构风险。该修正不涉及TAGE/BTBTAGE路径。
+
+enable-difftest canary命令：
+
+```bash
+cd /nfs_global/I/qimeng2/zhuyanbo/module-deletion-test
+tools/validation/run-l3-gem5 \
+  --stage isa \
+  --manifest build/validation/eda00-manifest/manifest.json \
+  --suite supported-cross-77 \
+  --suite-source build/validation/l3-gem5/isa/results.json \
+  --test rv64ui-p-add \
+  --difftest-mode enabled \
+  --difftest-ref-so XiangShan/ready-to-run/riscv64-nemu-interpreter-so \
+  --per-test-timeout 120 \
+  --output build/validation/l3-gem5-enable-difftest-eda00/canary/results.json
+```
+
+77项全量命令：
+
+```bash
+cd /nfs_global/I/qimeng2/zhuyanbo/module-deletion-test
+tools/validation/run-l3-gem5 \
+  --stage isa \
+  --manifest build/validation/eda00-manifest/manifest.json \
+  --suite supported-cross-77 \
+  --suite-source build/validation/l3-gem5/isa/results.json \
+  --difftest-mode enabled \
+  --difftest-ref-so XiangShan/ready-to-run/riscv64-nemu-interpreter-so \
+  --per-test-timeout 90 \
+  --output build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json
+```
+
+路径口径：
+
+- `build/validation/eda00-manifest/manifest.json` 是把本机 `/mnt/hgfs/...` 绝对路径重写为 `eda-00` `/nfs_global/...` 路径后的manifest。
+- `build/validation/l3-gem5/isa/results.json` 是用于选择 `supported-cross-77` 的历史非difftest source，不是本轮difftest结果。
+- 本轮difftest结果必须写到 `build/validation/l3-gem5-enable-difftest-eda00/`，不要覆盖旧的 `build/validation/l3-gem5/` 非difftest结果。
+- `collect-validation-results` 中该结果对应独立target `gem5-isa-difftest-eda00`，不会覆盖 `gem5-isa-first-layer`。
+
+当前证明边界：
+
+- `rv64ui-p-add` 在 `--disable-difftest` 下通过，说明当前 `eda-00` 上的GEM5二进制、raw-cpt路径、manifest路径重写和退出协议可用。
+- `rv64ui-p-add` 在NEMU enable-difftest下失败，日志显示ref so路径存在、difftest enable marker存在，并进入真实仿真后在 `Start regcpy to NEMU` 之后SIGSEGV。
+- `supported-cross-77` 全量结果为 `77 fail / 0 pass / 0 timeout`，所有77项 `return_code=-11`，总 `host_time=1556.37s`，墙钟约 `25分57秒`。
+- Spike ref so在`eda-00`上不可作为fallback，日志包含 `/lib64/libm.so.6: version 'GLIBC_2.29' not found`。
+- 因此当前结论是：GEM5 enable-difftest runner可以调度和记录77项，但GEM5<->NEMU difftest初始化链路全局崩溃，尚不能作为base-only TAGE实验的正确性gate，也不能宣称difftest harness完善。
 
 ### Chisel / RTL
 

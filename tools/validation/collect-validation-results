@@ -45,6 +45,7 @@ DETAIL_RESULT_PATHS = {
     "wally_benchmark": "build/validation/wally-benchmark/results.json",
     "wally_l3_isa": "build/validation/l3-wally/isa/results.json",
     "gem5_l3_supported_suite": "build/validation/l3-gem5/supported-cross-77/results.json",
+    "gem5_l3_difftest_eda00": "build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json",
     "gem5_l3_isa": "build/validation/l3-gem5/isa/results.json",
     "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
     "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
@@ -109,6 +110,7 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
     xiangshan_l3 = xiangshan_l3_detail(details)
     specs = (
         ("gem5_l3", "l3", "gem5-isa-first-layer", "linux", "supported-cross-77 RV64 suite"),
+        ("gem5_l3_difftest_eda00", "l3", "gem5-isa-difftest-eda00", "eda-00", "supported-cross-77 RV64 suite with enable-difftest"),
         ("wally_l3_isa", "l3", "wally-verilator-isa", "linux", "supported-cross-77 RV64 suite"),
         ("gem5_l3_medium", "l3", "gem5-medium", "linux", "CoreMark/Dhrystone/microbench"),
         ("gem5_l3_spec2006", "l3", "spec2006-checkpoint", "linux/eda-00", "SPEC2006 checkpoint manifest"),
@@ -221,6 +223,8 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("xiangshan_bpu_scalatest", {}).get("status")
     if target == "gem5-isa-first-layer":
         return gem5_l3_isa_detail(details).get("status")
+    if target == "gem5-isa-difftest-eda00":
+        return details.get("gem5_l3_difftest_eda00", {}).get("status")
     if target == "gem5-medium":
         return details.get("gem5_l3_medium", {}).get("status")
     if target == "spec2006-checkpoint":
@@ -292,18 +296,21 @@ def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) ->
                     "reason": "stats_path is debug-only because workload did not provide a full pass+metrics performance sample",
                 }
             )
-    l3_results = gem5_l3_isa_detail(details).get("results", [])
-    for row in l3_results:
-        if row.get("stats_path") and row.get("status") != "pass":
-            debug_artifacts.append(
-                {
-                    "target": "gem5-isa-first-layer",
-                    "workload": row.get("id"),
-                    "status": row.get("status"),
-                    "stats_path": row.get("stats_path"),
-                    "reason": "GEM5 stats from non-pass workload are retained only as debug artifacts",
-                }
-            )
+    for target, detail_payload in (
+        ("gem5-isa-first-layer", gem5_l3_isa_detail(details)),
+        ("gem5-isa-difftest-eda00", details.get("gem5_l3_difftest_eda00", {})),
+    ):
+        for row in detail_payload.get("results", []):
+            if row.get("stats_path") and row.get("status") != "pass":
+                debug_artifacts.append(
+                    {
+                        "target": target,
+                        "workload": row.get("id"),
+                        "status": row.get("status"),
+                        "stats_path": row.get("stats_path"),
+                        "reason": "GEM5 stats from non-pass workload are retained only as debug artifacts",
+                    }
+                )
     invalid_reasons = []
     if not valid_rows:
         invalid_reasons.append("no correctness-pass workload exposes simInsts/instrCnt/cycles/IPC")
@@ -351,6 +358,9 @@ def build_summary(root: Path) -> dict[str, Any]:
                 if details.get("gem5_l3_supported_suite", {}).get("status") not in {None, "missing"}
                 else DETAIL_RESULT_PATHS["gem5_l3_isa"]
             ),
+            "gem5_l3_difftest_eda00_status": details.get("gem5_l3_difftest_eda00", {}).get("status"),
+            "gem5_l3_difftest_eda00_summary": details.get("gem5_l3_difftest_eda00", {}).get("summary"),
+            "gem5_l3_difftest_eda00_source": DETAIL_RESULT_PATHS["gem5_l3_difftest_eda00"],
             "gem5_l3_medium_status": details.get("gem5_l3_medium", {}).get("status"),
             "gem5_l3_medium_missing_artifact": details.get("gem5_l3_medium", {}).get("missing_artifact"),
             "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),
