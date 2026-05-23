@@ -5,3 +5,5 @@ XiangShan-doc/
 m5out/
 build/validation/
 build/external/
+__pycache__/
+*.pyc
