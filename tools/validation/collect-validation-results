@@ -47,6 +47,7 @@ DETAIL_RESULT_PATHS = {
     "gem5_l3_supported_suite": "build/validation/l3-gem5/supported-cross-77/results.json",
     "gem5_l3_difftest_eda00": "build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json",
     "gem5_l3_difftest_linux_aarch64_spike": "build/validation/l3-gem5-spikeproxy-fix-linux-aarch64/supported-cross-77/results.json",
+    "gem5_l3_difftest_linux_aarch64_nemu": "build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/results.json",
     "gem5_l3_isa": "build/validation/l3-gem5/isa/results.json",
     "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
     "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
@@ -118,6 +119,13 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
             "gem5-isa-difftest-linux-aarch64-spike",
             "linux-aarch64",
             "supported-cross-77 RV64 suite with Spike enable-difftest",
+        ),
+        (
+            "gem5_l3_difftest_linux_aarch64_nemu",
+            "l3",
+            "gem5-isa-difftest-linux-aarch64-nemu",
+            "linux-aarch64",
+            "supported-cross-77 RV64 suite with NEMU enable-difftest",
         ),
         ("wally_l3_isa", "l3", "wally-verilator-isa", "linux", "supported-cross-77 RV64 suite"),
         ("gem5_l3_medium", "l3", "gem5-medium", "linux", "CoreMark/Dhrystone/microbench"),
@@ -235,6 +243,8 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("gem5_l3_difftest_eda00", {}).get("status")
     if target == "gem5-isa-difftest-linux-aarch64-spike":
         return details.get("gem5_l3_difftest_linux_aarch64_spike", {}).get("status")
+    if target == "gem5-isa-difftest-linux-aarch64-nemu":
+        return details.get("gem5_l3_difftest_linux_aarch64_nemu", {}).get("status")
     if target == "gem5-medium":
         return details.get("gem5_l3_medium", {}).get("status")
     if target == "spec2006-checkpoint":
@@ -313,6 +323,10 @@ def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) ->
             "gem5-isa-difftest-linux-aarch64-spike",
             details.get("gem5_l3_difftest_linux_aarch64_spike", {}),
         ),
+        (
+            "gem5-isa-difftest-linux-aarch64-nemu",
+            details.get("gem5_l3_difftest_linux_aarch64_nemu", {}),
+        ),
     ):
         for row in detail_payload.get("results", []):
             if row.get("stats_path") and row.get("status") != "pass":
@@ -378,6 +392,9 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_difftest_linux_aarch64_spike_status": details.get("gem5_l3_difftest_linux_aarch64_spike", {}).get("status"),
             "gem5_l3_difftest_linux_aarch64_spike_summary": details.get("gem5_l3_difftest_linux_aarch64_spike", {}).get("summary"),
             "gem5_l3_difftest_linux_aarch64_spike_source": DETAIL_RESULT_PATHS["gem5_l3_difftest_linux_aarch64_spike"],
+            "gem5_l3_difftest_linux_aarch64_nemu_status": details.get("gem5_l3_difftest_linux_aarch64_nemu", {}).get("status"),
+            "gem5_l3_difftest_linux_aarch64_nemu_summary": details.get("gem5_l3_difftest_linux_aarch64_nemu", {}).get("summary"),
+            "gem5_l3_difftest_linux_aarch64_nemu_source": DETAIL_RESULT_PATHS["gem5_l3_difftest_linux_aarch64_nemu"],
             "gem5_l3_medium_status": details.get("gem5_l3_medium", {}).get("status"),
             "gem5_l3_medium_missing_artifact": details.get("gem5_l3_medium", {}).get("missing_artifact"),
             "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),

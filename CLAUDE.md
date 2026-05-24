@@ -200,7 +200,52 @@ export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 ### GEM5 enable-difftest
 
-GEM5 enable-difftest必须区分宿主架构和ref so来源。默认远程`linux`是`aarch64`，不能直接复用仓内`XiangShan/ready-to-run/riscv64-nemu-interpreter-so`或`riscv64-spike-so`，因为这两个ready-to-run产物是`x86-64` shared object。若在`linux aarch64`上验证GEM5+Spike difftest，必须先在该宿主上从源码构建aarch64 Spike difftest so；若使用ready-to-run x86-64 NEMU so，仍只能放到x86-64宿主，例如`eda-00`，且当前历史结果并不通过。
+GEM5 enable-difftest必须区分宿主架构和ref so来源。默认远程`linux`是`aarch64`，不能直接复用仓内`XiangShan/ready-to-run/riscv64-nemu-interpreter-so`或`riscv64-spike-so`，因为这两个ready-to-run产物是`x86-64` shared object。若在`linux aarch64`上验证GEM5+NEMU或GEM5+Spike difftest，必须先在该宿主上从源码构建aarch64 ref so；若使用ready-to-run x86-64 NEMU so，仍只能放到x86-64宿主，例如`eda-00`，且当前历史结果并不通过。
+
+#### linux aarch64 NEMU difftest
+
+当前可作为后续轻量正确性gate的GEM5+NEMU路径限定为远程`linux aarch64`上的源码构建NEMU so和已适配NEMU ABI的GEM5二进制：
+
+```text
+GEM5 HEAD = 0faac096744d1787f1d5a6c3563d9ea66908df5c
+NEMU HEAD = ea34daa7 difftest: complete gem5 rv64mi csr alignment
+NEMU base = afcc5cdc9b3b6f4be0b7be264b0acbe307f27d44
+```
+
+关键修复边界：
+
+- GEM5侧在`GEM5/src/cpu/difftest.{cc,hh}`和`GEM5/src/cpu/base.cc`中增加NEMU legacy regfile和guided-exec适配，不再把GEM5内部`riscv64_CPU_regfile`直接传给NEMU。
+- NEMU侧在`build/external/nemu-gem5-ref-linux-aarch64/`中修复share模式SDL轮询、RV64MI所需CSR、`ebreak`/`mtval`、`jalr` bit0清除和GEM5暴露的`misa/mvendorid/marchid/mimpid`语义。
+- NEMU构建必须使用保守并行度，例如`env NEMU_HOME=$NEMU make -j2`；本轮fix5构建峰值RSS约`603976 KB`，`Swaps: 0`。
+
+最终ref so：
+
+```text
+build/validation/linux-aarch64-nemu-difftest/nemu-build-final-fix5/riscv64-nemu-interpreter-so
+```
+
+全量命令：
+
+```bash
+cd /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test
+/usr/bin/time -v -o build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/supported-cross-77.time \
+  /usr/bin/python3 tools/validation/run-l3-gem5 \
+    --stage isa \
+    --suite supported-cross-77 \
+    --difftest-mode enabled \
+    --difftest-ref-so build/validation/linux-aarch64-nemu-difftest/nemu-build-final-fix5/riscv64-nemu-interpreter-so \
+    --per-test-timeout 60 \
+    --output build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/results.json
+```
+
+最终结果和汇总口径：
+
+- 77项结果：`build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/results.json`。
+- 逐项时间：`build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/timing.json`和`timing.md`。
+- `collect-validation-results`中对应独立target：`gem5-isa-difftest-linux-aarch64-nemu`。
+- 结果为`77 pass / 0 fail / 0 timeout / 0 blocked / 0 unsupported`，逐项`host_time`总和`216.264s`，外层墙钟`3:36.57`，`host_time min/median/average/max = 2.548 / 2.7 / 2.809 / 4.052s`。
+- 该target不会覆盖非difftest `gem5-isa-first-layer`，也不会覆盖历史`gem5-isa-difftest-eda00`或Spike对照`gem5-isa-difftest-linux-aarch64-spike`。
+- 证明边界仍是`supported-cross-77`轻量功能difftest，不包含`supported-cross-77`外的`rv64mi-p-scall`、`rv64mi-p-pmpaddr`，也不证明SPEC2006、medium workload、性能delta或TAGE/base-only修改正确。
 
 #### linux aarch64 Spike difftest
 
@@ -210,7 +255,7 @@ GEM5 enable-difftest必须区分宿主架构和ref so来源。默认远程`linux
 /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test
 ```
 
-执行前必须确认`GEM5/`处于官方checkpoint干净树：
+复查Spike历史结果时必须确认`GEM5/`处于当轮Spike路径使用的官方checkpoint干净树：
 
 ```bash
 cd /mnt/hgfs/zhuyanbo/Desktop/FYTJ/Work/QiMeng/ArchCoder/dev/module-deletion-test
@@ -218,7 +263,7 @@ git -C GEM5 rev-parse HEAD
 git -C GEM5 status --short
 ```
 
-当前要求：
+Spike历史路径要求：
 
 ```text
 GEM5 baseline = e6172e6a550b1767c8ca4dbb6851e6efdb674c00
@@ -226,7 +271,7 @@ GEM5 current HEAD = 243e335baf4e71e56fb072ec724f83f9c6c062a2
 GEM5 status = clean
 ```
 
-上一轮为`eda-00` GCC9/CentOS7构建临时删除过`GEM5/src/mem/cache/prefetch/cdp.hh`中`CDP::~CDP()`对`Queued::~Queued()`的显式调用；当前项目共识不保留该源码改动。当前GEM5只允许在官方checkpoint之上包含`243e335baf fix(difftest): initialize Spike memcpy_init`这一项本轮修复。后续如果再次为`eda-00`构建需要兼容补丁，必须另行记录diff和证明边界，不能把补丁混入默认baseline。
+上一轮为`eda-00` GCC9/CentOS7构建临时删除过`GEM5/src/mem/cache/prefetch/cdp.hh`中`CDP::~CDP()`对`Queued::~Queued()`的显式调用；当前项目共识不保留该源码改动。Spike历史路径只允许在官方checkpoint之上包含`243e335baf fix(difftest): initialize Spike memcpy_init`这一项修复。后续如果再次为`eda-00`构建需要兼容补丁，必须另行记录diff和证明边界，不能把补丁混入默认baseline。
 
 Spike difftest源码和构建命令：
 

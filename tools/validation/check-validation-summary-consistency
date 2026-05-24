@@ -331,6 +331,45 @@ def check_gem5_linux_aarch64_spike_difftest_is_separate_gate(collector) -> None:
         assert any(row.get("target") == "gem5-isa-difftest-linux-aarch64-spike" for row in debug), debug
 
 
+def check_gem5_linux_aarch64_nemu_difftest_is_separate_gate(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/supported-cross-77/results.json",
+            {"status": "pass", "summary": {"total": 77, "by_status": {"pass": 77}}},
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5-enable-difftest-eda00/supported-cross-77/results.json",
+            {"status": "fail", "summary": {"total": 77, "by_status": {"fail": 77}}},
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5-spikeproxy-fix-linux-aarch64/supported-cross-77/results.json",
+            {"status": "fail", "summary": {"total": 77, "by_status": {"pass": 72, "fail": 5}}},
+        )
+        write_json(
+            root,
+            "build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/results.json",
+            {
+                "status": "pass",
+                "reason": "NEMU enable-difftest suite passed",
+                "summary": {"total": 77, "by_status": {"pass": 77, "fail": 0, "timeout": 0}},
+            },
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["gem5_l3_isa_status"] == "pass", detail
+        assert detail["gem5_l3_difftest_eda00_status"] == "fail", detail
+        assert detail["gem5_l3_difftest_linux_aarch64_spike_status"] == "fail", detail
+        assert detail["gem5_l3_difftest_linux_aarch64_nemu_status"] == "pass", detail
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-isa-difftest-linux-aarch64-nemu")
+        assert gate["effective_status"] == "pass", gate
+        assert gate["host"] == "linux-aarch64", gate
+        assert gate["source"] == "build/validation/linux-aarch64-nemu-difftest/supported-cross-77/final-nemu-fix5/results.json", gate
+
+
 def main() -> int:
     collector = load_collector()
     checks = [
@@ -346,6 +385,7 @@ def main() -> int:
         check_gem5_supported_suite_overrides_full_manifest,
         check_gem5_enable_difftest_eda00_is_separate_gate,
         check_gem5_linux_aarch64_spike_difftest_is_separate_gate,
+        check_gem5_linux_aarch64_nemu_difftest_is_separate_gate,
     ]
     for check in checks:
         check(collector)
