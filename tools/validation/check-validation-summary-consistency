@@ -276,6 +276,95 @@ def check_spec2006_full_timeout_is_separate(collector) -> None:
         assert any(row["target"] == "gem5-spec2006-full-checkpoint" and row["wall_time_seconds"] == 3600.0 for row in timing), timing
 
 
+def check_spec2006_full_disabled_and_difftest_are_separate(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006-full-disabled/results.json",
+            {
+                "status": "pass",
+                "reason": "disabled complete run passed",
+                "summary": {"total": 2, "by_status": {"pass": 2}},
+                "results": [
+                    {
+                        "id": "perlbench_diffmail-12",
+                        "status": "pass",
+                        "run_mode": "complete",
+                        "difftest_enabled": False,
+                        "maxinsts_disabled": True,
+                        "wall_time_seconds": 12.0,
+                        "stop_reason": "m5_exit instruction encountered",
+                    }
+                ],
+            },
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006-full-difftest/results.json",
+            {
+                "status": "fail",
+                "reason": "difftest mismatch detected",
+                "summary": {"total": 2, "by_status": {"pass": 1, "fail": 1}},
+                "results": [
+                    {
+                        "id": "perlbench_diffmail-12",
+                        "status": "fail",
+                        "run_mode": "complete",
+                        "difftest_enabled": True,
+                        "maxinsts_disabled": True,
+                        "wall_time_seconds": 3.0,
+                        "stop_reason": "difftest panic",
+                    }
+                ],
+            },
+        )
+        payload = collector.build_summary(root)
+        detail = payload["detail_summary"]
+        assert detail["gem5_l3_spec2006_full_disabled_status"] == "pass", detail
+        assert detail["gem5_l3_spec2006_full_difftest_status"] == "fail", detail
+        disabled_gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-full-disabled")
+        difftest_gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-full-difftest")
+        assert disabled_gate["effective_status"] == "pass", disabled_gate
+        assert difftest_gate["effective_status"] == "fail", difftest_gate
+        assert disabled_gate["source"] == "build/validation/l3-gem5/spec2006-full-disabled/results.json", disabled_gate
+        assert difftest_gate["source"] == "build/validation/l3-gem5/spec2006-full-difftest/results.json", difftest_gate
+        timing = payload["detail_summary"]["spec2006_canary_timing"]
+        assert any(row["target"] == "gem5-spec2006-full-disabled" for row in timing), timing
+        assert any(row["target"] == "gem5-spec2006-full-difftest" for row in timing), timing
+
+
+def check_spec2006_oom_is_not_plain_timeout_or_fail(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006-full-disabled/results.json",
+            {
+                "status": "oom",
+                "reason": "selected SPEC2006 checkpoint entries encountered OOM evidence; stop subsequent phases",
+                "summary": {"total": 1, "by_status": {"oom": 1}},
+                "results": [
+                    {
+                        "id": "mcf-1811",
+                        "status": "oom",
+                        "run_mode": "complete",
+                        "difftest_enabled": False,
+                        "oom_detected": True,
+                        "oom_reason": "process exited with SIGKILL without runner timeout kill; possible OOM kill",
+                        "time_log_path": "time/mcf-1811.time",
+                    }
+                ],
+            },
+        )
+        payload = collector.build_summary(root)
+        assert payload["gate_summary"]["oom"] == 1, payload["gate_summary"]
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-full-disabled")
+        assert gate["effective_status"] == "oom", gate
+        timing = payload["detail_summary"]["spec2006_canary_timing"]
+        assert any(row["target"] == "gem5-spec2006-full-disabled" and row["oom_detected"] for row in timing), timing
+
+
 def check_medium_missing_artifact_is_not_unsupported(collector) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -503,6 +592,8 @@ def main() -> int:
         check_spec2006_checkpoint_targets_are_separate,
         check_spec2006_unsupported_detail_does_not_pass,
         check_spec2006_full_timeout_is_separate,
+        check_spec2006_full_disabled_and_difftest_are_separate,
+        check_spec2006_oom_is_not_plain_timeout_or_fail,
         check_medium_missing_artifact_is_not_unsupported,
         check_eda00_smoke_overrides_local_guard,
         check_xiangshan_complete_suite_overrides_smoke,

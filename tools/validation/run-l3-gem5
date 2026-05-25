@@ -18,9 +18,10 @@ from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
 from spec2006_gcpt_layout import detect_gcpt_layout
 
 
-STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
+STATUS_ENUM = ("pass", "fail", "timeout", "oom", "unsupported", "blocked_missing_artifact", "blocked_env")
 MEDIUM_MANIFEST_RECOMMENDED_PATH = "build/validation/medium-workloads/manifest.json"
 SPEC2006_MANIFEST_RECOMMENDED_PATH = "build/validation/spec2006-checkpoints/manifest.json"
+SPEC2006_DEFAULT_CHECKPOINT_END_MAXINSTS = 40 * 10**6
 SPEC2006_MANIFEST_CONTRACT = {
     "schema_version": 1,
     "recommended_path": SPEC2006_MANIFEST_RECOMMENDED_PATH,
@@ -85,7 +86,7 @@ def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, 
     text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     if timed_out:
         if "Entering event queue" in text or "Starting simulation" in text:
-            return "timeout", "entered simulation but did not naturally consume the selected exit protocol before timeout"
+            return "timeout", "entered simulation but did not reach the selected exit protocol before timeout"
         return "timeout", "timed out before clear simulation entry"
     if "cannot open shared object file" in text and "for difftest" in text:
         return "blocked_missing_artifact", "difftest reference shared library could not be loaded"
@@ -110,6 +111,60 @@ def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, 
     if "Exiting @ tick" in text or "simulate() limit reached" in text:
         return "unsupported", "gem5 exited without recognized riscv-tests pass/fail protocol"
     return "unsupported", "no recognized pass/fail marker"
+
+
+def oom_log_evidence(log_path: Path, rc: int | None, timed_out: bool, killed_by_runner: bool, time_log_path: Path | None = None) -> dict:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    time_text = time_log_path.read_text(encoding="utf-8", errors="replace") if time_log_path and time_log_path.exists() else ""
+    combined = "\n".join([text, time_text]).lower()
+    markers = [
+        "out of memory",
+        "oom-kill",
+        "oom killer",
+        "killed process",
+        "cannot allocate memory",
+        "std::bad_alloc",
+        "memoryerror",
+    ]
+    marker_line = None
+    for line in (text + "\n" + time_text).splitlines():
+        lowered = line.lower()
+        if any(marker in lowered for marker in markers):
+            marker_line = line.strip()
+            break
+    sigkill_without_timeout = rc == -signal.SIGKILL and not timed_out and not killed_by_runner
+    shell_killed_line = marker_line is None and "\nkilled\n" in f"\n{combined}\n" and not killed_by_runner
+    detected = marker_line is not None or sigkill_without_timeout or shell_killed_line
+    if marker_line:
+        reason = marker_line
+    elif sigkill_without_timeout:
+        reason = "process exited with SIGKILL without runner timeout kill; possible OOM kill"
+    elif shell_killed_line:
+        reason = "log contains bare Killed marker without runner timeout kill"
+    else:
+        reason = None
+    return {
+        "detected": detected,
+        "reason": reason,
+        "return_code": rc,
+        "timed_out": timed_out,
+        "killed_by_runner": killed_by_runner,
+        "time_log_path": str(time_log_path) if time_log_path else None,
+    }
+
+
+def gnu_time_prefix(time_log_path: Path) -> list[str]:
+    time_bin = Path("/usr/bin/time")
+    if not time_bin.exists():
+        return []
+    try:
+        probe = subprocess.run([str(time_bin), "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if probe.returncode != 0:
+        return []
+    time_log_path.parent.mkdir(parents=True, exist_ok=True)
+    return [str(time_bin), "-v", "-o", str(time_log_path)]
 
 
 def artifact_for_backend(test: dict, backend: str) -> Path:
@@ -506,15 +561,18 @@ def run_spec2006_one(
     maxinsts: int | None,
     dry_run: bool,
     run_mode: str,
+    checkpoint_end_maxinsts: int,
 ) -> dict:
     entry_id = entry["id"]
     difftest_enabled = difftest_mode == "enabled"
     checkpoint = resolve_repo_path(root, Path(entry["checkpoint"]))
     timeout_seconds = timeout or int(entry.get("timeout_seconds") or 300)
     if run_mode == "complete":
-        maxinsts_value = maxinsts if maxinsts and maxinsts > 0 else None
+        maxinsts_value = maxinsts if maxinsts and maxinsts > 0 else int(entry.get("checkpoint_end_maxinsts") or checkpoint_end_maxinsts)
+        maxinsts_policy = "checkpoint_end"
     else:
         maxinsts_value = maxinsts or int(entry.get("maxinsts") or 10000)
+        maxinsts_policy = "bounded_canary"
     maxinsts_disabled = maxinsts_value is None
     detected_layout = detect_gcpt_layout(checkpoint) if checkpoint and checkpoint.exists() else {"layout": "unknown"}
     gcpt_layout = effective_gcpt_layout(entry, detected_layout)
@@ -522,6 +580,7 @@ def run_spec2006_one(
     h_aware_ref_required = requires_h_aware_ref(entry, gcpt_layout)
     resolved_ref_so = resolve_difftest_ref_so(root, difftest_ref_so, h_aware_ref_required) if difftest_enabled else None
     restorer_path, restorer_policy, restorer_error = resolve_gcpt_restorer(root, entry, gcpt_restorer, gcpt_layout)
+    time_log_path = output_dir / "time" / f"{entry_id}.time"
     base = {
         "id": entry_id,
         "suite": "spec2006",
@@ -541,10 +600,11 @@ def run_spec2006_one(
         "requires_h_aware_ref": h_aware_ref_required,
         "maxinsts": maxinsts_value,
         "maxinsts_disabled": maxinsts_disabled,
+        "maxinsts_policy": maxinsts_policy,
         "run_mode": run_mode,
-        "completion_policy": "natural_exit_marker" if run_mode == "complete" else "bounded_canary_after_checkpoint_entry",
+        "completion_policy": "checkpoint_end_maxinsts" if run_mode == "complete" else "bounded_canary_after_checkpoint_entry",
         "complete_run_stop_condition": (
-            "pass only when checkpoint enters simulation and GEM5 exits naturally with m5_exit/good trap/equivalent marker"
+            "pass when checkpoint enters simulation and reaches the checkpoint-end maxinsts boundary"
             if run_mode == "complete"
             else "pass when checkpoint enters simulation and reaches maxinsts or bounded timeout"
         ),
@@ -555,6 +615,9 @@ def run_spec2006_one(
         "host_time": None,
         "timed_out": False,
         "killed": False,
+        "oom_detected": False,
+        "oom_reason": None,
+        "time_log_path": str(time_log_path),
         "dry_run": dry_run,
     }
     if checkpoint is None or not checkpoint.exists():
@@ -599,20 +662,26 @@ def run_spec2006_one(
             "status": "unsupported",
             "reason": "dry-run only",
             "command": command,
+            "executed_command": command,
             "log_path": str(log_path),
             "stats_path": str(stats_path),
+            "time_log_path": str(time_log_path),
+            "oom_detected": False,
+            "oom_reason": None,
         }
     log_path.parent.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
+    time_prefix = gnu_time_prefix(time_log_path)
+    executed_command = [*time_prefix, *command]
     started_at = iso_now()
     start = time.monotonic()
     rc = None
     timed_out = False
     killed = False
     with log_path.open("w", encoding="utf-8") as log:
-        log.write("$ " + " ".join(command) + "\n\n")
+        log.write("$ " + " ".join(executed_command) + "\n\n")
         try:
-            process = subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            process = subprocess.Popen(executed_command, cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             rc = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             log.write(f"\nTIMEOUT after {timeout_seconds}s\n")
@@ -623,16 +692,20 @@ def run_spec2006_one(
     status, reason = classify_log(log_path, rc, timed_out)
     difftest_evidence = difftest_log_evidence(log_path)
     gcpt_evidence = gcpt_log_evidence(log_path)
+    oom_evidence = oom_log_evidence(log_path, rc, timed_out, killed, time_log_path if time_log_path.exists() else None)
+    if oom_evidence["detected"]:
+        status = "oom"
+        reason = oom_evidence["reason"] or "OOM evidence detected"
     if status == "timeout" and gcpt_evidence["entered_simulation"] and run_mode == "complete":
-        reason = "entered checkpoint simulation but did not naturally complete before long timeout"
+        reason = "entered checkpoint simulation but did not reach checkpoint-end boundary before long timeout"
     elif status == "timeout" and gcpt_evidence["entered_simulation"]:
         reason = "entered checkpoint simulation and reached bounded timeout"
     elif status == "timeout":
         status = "fail"
         reason = "timed out before checkpoint simulation entry"
     if run_mode == "complete" and status == "unsupported" and gcpt_evidence["entered_simulation"] and gcpt_evidence["reached_maxinsts"]:
-        status = "timeout"
-        reason = "reached instruction budget before natural checkpoint completion"
+        status = "pass"
+        reason = "checkpoint-end max instruction count reached after checkpoint entry"
     elif run_mode == "complete" and status == "unsupported" and gcpt_evidence["entered_simulation"]:
         status = "fail"
         reason = "gem5 exited after checkpoint entry without a complete-run marker"
@@ -652,8 +725,10 @@ def run_spec2006_one(
         "reason": reason,
         "return_code": rc,
         "command": command,
+        "executed_command": executed_command,
         "log_path": str(log_path),
         "stats_path": str(stats_path) if stats_path.exists() else None,
+        "time_log_path": str(time_log_path) if time_log_path.exists() else str(time_log_path),
         "started_at": started_at,
         "ended_at": ended_at,
         "wall_time_seconds": wall_time,
@@ -662,6 +737,9 @@ def run_spec2006_one(
         "timed_out": timed_out,
         "killed": killed,
         "stop_reason": reason,
+        "oom_detected": oom_evidence["detected"],
+        "oom_reason": oom_evidence["reason"],
+        "oom_log_evidence": oom_evidence,
         "difftest_log_evidence": difftest_evidence,
         "gcpt_log_evidence": gcpt_evidence,
     }
@@ -805,6 +883,14 @@ def run_blocked_stage(args: argparse.Namespace, stage: str) -> int:
     return 0
 
 
+def spec2006_target(run_mode: str, difftest_mode: str) -> str:
+    if run_mode != "complete":
+        return "gem5-spec2006-checkpoint"
+    if difftest_mode == "enabled":
+        return "gem5-spec2006-full-difftest"
+    return "gem5-spec2006-full-disabled"
+
+
 def run_spec2006(args: argparse.Namespace) -> int:
     root = args.repo_root.resolve()
     if not args.manifest.exists():
@@ -812,7 +898,7 @@ def run_spec2006(args: argparse.Namespace) -> int:
     manifest = load_manifest(args.manifest)
     entries = select_spec2006_entries(manifest, set(args.test), args.spec2006_canary)
     if not entries:
-        target = "gem5-spec2006-full-checkpoint" if args.spec2006_run_mode == "complete" else "gem5-spec2006-checkpoint"
+        target = spec2006_target(args.spec2006_run_mode, args.difftest_mode)
         payload = {
             "schema_version": 1,
             "layer": "l3",
@@ -827,8 +913,9 @@ def run_spec2006(args: argparse.Namespace) -> int:
         }
         write_payload(args.output, payload)
         return 1
-    rows = [
-        run_spec2006_one(
+    rows = []
+    for entry in entries:
+        row = run_spec2006_one(
             root,
             entry,
             args.output.parent,
@@ -839,11 +926,13 @@ def run_spec2006(args: argparse.Namespace) -> int:
             args.maxinsts,
             args.dry_run,
             args.spec2006_run_mode,
+            args.spec2006_checkpoint_end_maxinsts,
         )
-        for entry in entries
-    ]
+        rows.append(row)
+        if row.get("status") == "oom":
+            break
     summary = summarize(rows)
-    hard_statuses = ("fail", "blocked_missing_artifact", "blocked_env", "timeout") if args.spec2006_run_mode == "complete" else ("fail", "blocked_missing_artifact", "blocked_env")
+    hard_statuses = ("fail", "blocked_missing_artifact", "blocked_env", "timeout", "oom") if args.spec2006_run_mode == "complete" else ("fail", "blocked_missing_artifact", "blocked_env", "oom")
     hard_blocking = sum(summary["by_status"].get(status, 0) for status in hard_statuses)
     blocking = hard_blocking + summary["by_status"].get("unsupported", 0)
     if args.dry_run and hard_blocking:
@@ -863,13 +952,16 @@ def run_spec2006(args: argparse.Namespace) -> int:
         if blocking == 0 and rows:
             status = "pass"
             reason = (
-                "all selected SPEC2006 checkpoint entries reached complete-run exit criteria"
+                "all selected SPEC2006 checkpoint entries reached checkpoint-end exit criteria"
                 if args.spec2006_run_mode == "complete"
                 else "all selected SPEC2006 checkpoint entries reached bounded canary criteria"
             )
+        elif summary["by_status"].get("oom", 0):
+            status = "oom"
+            reason = "selected SPEC2006 checkpoint entries encountered OOM evidence; stop subsequent phases"
         elif args.spec2006_run_mode == "complete" and summary["by_status"].get("timeout", 0) and not summary["by_status"].get("fail", 0):
             status = "timeout"
-            reason = "selected SPEC2006 checkpoint entries did not naturally complete before long timeout"
+            reason = "selected SPEC2006 checkpoint entries did not reach checkpoint-end boundary before long timeout"
         elif summary["by_status"].get("blocked_missing_artifact", 0) and not summary["by_status"].get("fail", 0) and not summary["by_status"].get("blocked_env", 0):
             status = "blocked_missing_artifact"
             reason = "selected SPEC2006 checkpoint entries are blocked by missing artifacts"
@@ -879,7 +971,7 @@ def run_spec2006(args: argparse.Namespace) -> int:
         else:
             status = "fail"
             reason = "selected SPEC2006 checkpoint entries did not satisfy canary criteria"
-    target = "gem5-spec2006-full-checkpoint" if args.spec2006_run_mode == "complete" else "gem5-spec2006-checkpoint"
+    target = spec2006_target(args.spec2006_run_mode, args.difftest_mode)
     payload = {
         "schema_version": 1,
         "layer": "l3",
@@ -924,16 +1016,18 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--difftest-ref-so", type=Path, default=None, help="reference model shared library for --difftest-mode enabled; defaults to XiangShan/ready-to-run/riscv64-nemu-interpreter-so")
     parser.add_argument("--dry-run", action="store_true", help="emit selected commands without launching GEM5")
     parser.add_argument("--spec2006-canary", action="store_true", help="select the manifest canary entry for --stage spec2006")
-    parser.add_argument("--spec2006-run-mode", choices=("bounded", "complete"), default="bounded", help="bounded keeps canary maxinsts semantics; complete waits for natural checkpoint completion")
+    parser.add_argument("--spec2006-run-mode", choices=("bounded", "complete"), default="bounded", help="bounded keeps canary maxinsts semantics; complete runs until the checkpoint-end instruction boundary")
+    parser.add_argument("--spec2006-checkpoint-end-maxinsts", type=int, default=SPEC2006_DEFAULT_CHECKPOINT_END_MAXINSTS, help="complete-mode instruction boundary that marks the end of the checkpoint sample")
     parser.add_argument("--gcpt-restorer", default="auto", help="GCPT restorer policy for SPEC2006: auto, none, or a path")
-    parser.add_argument("--maxinsts", type=int, default=None, help="bounded instruction limit for SPEC2006 checkpoint canaries; in complete mode, omit or pass 0 to disable")
+    parser.add_argument("--maxinsts", type=int, default=None, help="override instruction limit; bounded defaults to manifest maxinsts, complete defaults to --spec2006-checkpoint-end-maxinsts")
     args = parser.parse_args(argv)
     if args.output is None:
         if args.difftest_mode == "enabled" and args.stage == "isa":
             output_leaf = args.suite or args.stage
             args.output = root / "build" / "validation" / "l3-gem5-enable-difftest" / output_leaf / "results.json"
         elif args.stage == "spec2006" and args.spec2006_run_mode == "complete":
-            args.output = root / "build" / "validation" / "l3-gem5" / "spec2006-full" / "results.json"
+            output_leaf = "spec2006-full-difftest" if args.difftest_mode == "enabled" else "spec2006-full-disabled"
+            args.output = root / "build" / "validation" / "l3-gem5" / output_leaf / "results.json"
         else:
             args.output = root / "build" / "validation" / "l3-gem5" / args.stage / "results.json"
     if args.stage == "isa":

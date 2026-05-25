@@ -14,6 +14,7 @@ STATUS_ENUM = (
     "pass",
     "fail",
     "timeout",
+    "oom",
     "unsupported",
     "blocked_missing_artifact",
     "blocked_env",
@@ -52,6 +53,8 @@ DETAIL_RESULT_PATHS = {
     "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
     "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
     "gem5_l3_spec2006_full": "build/validation/l3-gem5/spec2006-full/results.json",
+    "gem5_l3_spec2006_full_disabled": "build/validation/l3-gem5/spec2006-full-disabled/results.json",
+    "gem5_l3_spec2006_full_difftest": "build/validation/l3-gem5/spec2006-full-difftest/results.json",
     "xiangshan_l3_isa": "build/validation/l3-xiangshan/isa/results.json",
     "xiangshan_l3_spec2006": "build/validation/l3-xiangshan/spec2006/results.json",
     "xiangshan_l3_eda00_smoke": "build/validation/l3-xiangshan/eda00-smoke/results.json",
@@ -139,6 +142,8 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
         ("wally_l3_isa", "l3", "wally-verilator-isa", "linux", "supported-cross-77 RV64 suite"),
         ("gem5_l3_medium", "l3", "gem5-medium", "linux", "CoreMark/Dhrystone/microbench"),
         ("gem5_l3_spec2006", "l3", "gem5-spec2006-checkpoint", "linux", "SPEC2006 checkpoint manifest"),
+        ("gem5_l3_spec2006_full_disabled", "l3", "gem5-spec2006-full-disabled", "linux-aarch64", "SPEC2006 checkpoint complete run without difftest"),
+        ("gem5_l3_spec2006_full_difftest", "l3", "gem5-spec2006-full-difftest", "linux-aarch64", "SPEC2006 checkpoint complete run with difftest"),
         ("gem5_l3_spec2006_full", "l3", "gem5-spec2006-full-checkpoint", "linux", "SPEC2006 checkpoint complete run"),
         ("xiangshan_l3_spec2006", "l3", "xiangshan-spec2006-checkpoint", "eda-00", "SPEC2006 checkpoint manifest"),
         ("xiangshan_l3", "l3", "xiangshan-emu-isa", "eda-00", "supported-cross-77 RV64 suite"),
@@ -261,6 +266,10 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("gem5_l3_medium", {}).get("status")
     if target == "gem5-spec2006-checkpoint":
         return details.get("gem5_l3_spec2006", {}).get("status")
+    if target == "gem5-spec2006-full-disabled":
+        return details.get("gem5_l3_spec2006_full_disabled", {}).get("status")
+    if target == "gem5-spec2006-full-difftest":
+        return details.get("gem5_l3_spec2006_full_difftest", {}).get("status")
     if target == "gem5-spec2006-full-checkpoint":
         return details.get("gem5_l3_spec2006_full", {}).get("status")
     if target == "xiangshan-spec2006-checkpoint":
@@ -317,6 +326,8 @@ def spec2006_canary_timing(details: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for key, target in (
         ("gem5_l3_spec2006", "gem5-spec2006-checkpoint"),
+        ("gem5_l3_spec2006_full_disabled", "gem5-spec2006-full-disabled"),
+        ("gem5_l3_spec2006_full_difftest", "gem5-spec2006-full-difftest"),
         ("gem5_l3_spec2006_full", "gem5-spec2006-full-checkpoint"),
         ("xiangshan_l3_spec2006", "xiangshan-spec2006-checkpoint"),
     ):
@@ -335,8 +346,11 @@ def spec2006_canary_timing(details: dict[str, Any]) -> list[dict[str, Any]]:
                 "timeout_seconds": row.get("timeout_seconds"),
                 "stop_reason": row.get("stop_reason") or row.get("reason"),
                 "killed": row.get("killed"),
+                "oom_detected": row.get("oom_detected"),
+                "oom_reason": row.get("oom_reason"),
                 "log_path": row.get("log_path"),
                 "stats_path": row.get("stats_path"),
+                "time_log_path": row.get("time_log_path"),
             }
         )
     return rows
@@ -448,6 +462,10 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_spec2006_manifest_contract": details.get("gem5_l3_spec2006", {}).get("manifest_contract"),
             "gem5_l3_spec2006_full_status": details.get("gem5_l3_spec2006_full", {}).get("status"),
             "gem5_l3_spec2006_full_summary": details.get("gem5_l3_spec2006_full", {}).get("summary"),
+            "gem5_l3_spec2006_full_disabled_status": details.get("gem5_l3_spec2006_full_disabled", {}).get("status"),
+            "gem5_l3_spec2006_full_disabled_summary": details.get("gem5_l3_spec2006_full_disabled", {}).get("summary"),
+            "gem5_l3_spec2006_full_difftest_status": details.get("gem5_l3_spec2006_full_difftest", {}).get("status"),
+            "gem5_l3_spec2006_full_difftest_summary": details.get("gem5_l3_spec2006_full_difftest", {}).get("summary"),
             "xiangshan_l3_spec2006_status": details.get("xiangshan_l3_spec2006", {}).get("status"),
             "xiangshan_l3_spec2006_summary": details.get("xiangshan_l3_spec2006", {}).get("summary"),
             "spec2006_canary_timing": spec2006_canary_timing(details),
