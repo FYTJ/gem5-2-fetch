@@ -11,9 +11,11 @@ import statistics
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
+from spec2006_gcpt_layout import detect_gcpt_layout
 
 
 STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
@@ -37,6 +39,10 @@ SPEC2006_MANIFEST_CONTRACT = {
         "env",
         "warmup_insts",
         "maxinsts",
+        "gcpt_layout",
+        "gcpt_restorer",
+        "requires_rvh",
+        "requires_h_aware_ref",
         "metrics",
     ],
     "minimal_example": {
@@ -48,6 +54,10 @@ SPEC2006_MANIFEST_CONTRACT = {
                 "checkpoint": "/abs/path/or/repo-relative/spec2006/400.perlbench/checkpoint",
                 "workload": "ref",
                 "expected_exit": "m5_exit",
+                "gcpt_layout": "embedded-rvh",
+                "gcpt_restorer": "none",
+                "requires_rvh": True,
+                "requires_h_aware_ref": True,
                 "metrics": ["simInsts", "instrCnt", "cycles", "IPC"],
             }
         ],
@@ -85,6 +95,8 @@ def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, 
         return "fail", "difftest mismatch detected"
     if "No valid ref_so file specified" in text or "difftest_ref_so" in text and "fatal" in text.lower():
         return "blocked_missing_artifact", "difftest reference shared library was not resolved"
+    if "Commit stage is stucked" in text:
+        return "fail", "gem5 commit stage stuck after checkpoint restore"
     if "panic:" in text.lower() and "difftest" in text.lower():
         return "fail", "difftest panic"
     if "m5_fail instruction encountered" in text:
@@ -117,12 +129,49 @@ def resolve_repo_path(root: Path, path: Path | None) -> Path | None:
     return root / path
 
 
-def default_difftest_ref_so(root: Path) -> Path:
+def default_difftest_ref_so(root: Path, requires_h_aware_ref: bool = False) -> Path:
+    if requires_h_aware_ref and os.environ.get("GCBH_REF_SO"):
+        return Path(os.environ["GCBH_REF_SO"])
     return root / "XiangShan" / "ready-to-run" / "riscv64-nemu-interpreter-so"
 
 
-def resolve_difftest_ref_so(root: Path, requested: Path | None) -> Path:
-    return resolve_repo_path(root, requested) or default_difftest_ref_so(root)
+def resolve_difftest_ref_so(root: Path, requested: Path | None, requires_h_aware_ref: bool = False) -> Path:
+    return resolve_repo_path(root, requested) or default_difftest_ref_so(root, requires_h_aware_ref)
+
+
+def default_gcpt_restorer_candidates(root: Path) -> list[Path]:
+    return [
+        root / "NEMU" / "resource" / "gcpt_restore" / "build" / "gcpt.bin",
+        root / "build" / "external" / "nemu-gem5-ref-linux-aarch64" / "resource" / "gcpt_restore" / "build" / "gcpt.bin",
+    ]
+
+
+def normalize_gcpt_restorer_path(root: Path, raw: str) -> tuple[str | None, str | None]:
+    path = resolve_repo_path(root, Path(raw))
+    if path is None:
+        return None, "gcpt restorer path was not resolved"
+    if path.is_dir():
+        path = path / "build" / "gcpt.bin"
+    if not path.exists():
+        return str(path), "missing gcpt restorer"
+    return str(path), None
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_host_seconds(stats_path: Path) -> float | None:
+    if not stats_path.exists():
+        return None
+    for line in stats_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "hostSeconds":
+            try:
+                return float(parts[1])
+            except ValueError:
+                return None
+    return None
 
 
 def difftest_log_evidence(log_path: Path) -> dict:
@@ -147,6 +196,40 @@ def difftest_log_evidence(log_path: Path) -> dict:
         "ref_load_error": ref_load_error_line,
         "enabled": enabled_line is not None,
         "disabled": disabled_line is not None,
+    }
+
+
+def gcpt_log_evidence(log_path: Path) -> dict:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    checkpoint_line = None
+    restorer_line = None
+    restorer_size_line = None
+    simulation_entry_line = None
+    restored_line = None
+    maxinsts_line = None
+    for line in text.splitlines():
+        lowered = line.lower()
+        if checkpoint_line is None and any(token in lowered for token in ("generic_rv_cpt", "generic-rv-cpt", "restore from gcpt", "zstd")):
+            checkpoint_line = line.strip()
+        if restorer_line is None and "restorer" in lowered and "command line:" not in lowered:
+            restorer_line = line.strip()
+        if restorer_size_line is None and "gcpt restore size" in lowered:
+            restorer_size_line = line.strip()
+        if simulation_entry_line is None and ("Entering event queue" in line or "Starting simulation" in line):
+            simulation_entry_line = line.strip()
+        if restored_line is None and "Restored from Xiangshan RISC-V Checkpoint" in line:
+            restored_line = line.strip()
+        if maxinsts_line is None and "max instruction count" in lowered:
+            maxinsts_line = line.strip()
+    return {
+        "checkpoint_marker": checkpoint_line,
+        "restorer_marker": restorer_line,
+        "restorer_size_marker": restorer_size_line,
+        "simulation_entry_marker": simulation_entry_line,
+        "restored_marker": restored_line,
+        "maxinsts_marker": maxinsts_line,
+        "entered_simulation": simulation_entry_line is not None,
+        "reached_maxinsts": maxinsts_line is not None,
     }
 
 
@@ -348,6 +431,242 @@ def summarize(rows: list[dict]) -> dict:
     return {"total": len(rows), "by_status": by_status, "by_suite": by_suite, "host_time": timing}
 
 
+def select_spec2006_entries(manifest: dict, filters: set[str], canary: bool) -> list[dict]:
+    entries = manifest.get("benchmarks", [])
+    if canary:
+        entries = [entry for entry in entries if entry.get("canary") or entry.get("id") == manifest.get("canary_id")]
+    if not filters:
+        return list(entries)
+    selected = []
+    for entry in entries:
+        names = {
+            str(entry.get("id", "")),
+            str(entry.get("benchmark", "")),
+            str(entry.get("workload", "")),
+            f"{entry.get('benchmark', '')}/{entry.get('workload', '')}",
+            f"{entry.get('workload', '')}-{entry.get('point', '')}",
+        }
+        if names & filters:
+            selected.append(entry)
+    return selected
+
+
+def effective_gcpt_layout(entry: dict, detected: dict) -> str:
+    detected_layout = str(detected.get("layout") or "unknown")
+    if detected_layout != "unknown":
+        return detected_layout
+    return str(entry.get("gcpt_layout") or "unknown")
+
+
+def requires_rvh_checkpoint(entry: dict, layout: str) -> bool:
+    return layout == "embedded-rvh" or bool(entry.get("requires_rvh"))
+
+
+def requires_h_aware_ref(entry: dict, layout: str) -> bool:
+    return layout == "embedded-rvh" or bool(entry.get("requires_h_aware_ref"))
+
+
+def resolve_gcpt_restorer(root: Path, entry: dict, requested: str, layout: str) -> tuple[str | None, str, str | None]:
+    if layout == "embedded-rvh":
+        if requested in {"auto", "none"}:
+            return "None", "none", None
+        return (
+            None,
+            requested,
+            "checkpoint is embedded RVH/new-layout GCPT; use --gcpt-restorer none to avoid overwriting its embedded restorer",
+        )
+    raw = requested
+    if requested == "auto":
+        manifest_value = entry.get("gcpt_restorer")
+        if manifest_value and manifest_value not in {"auto", "unknown"}:
+            raw = str(manifest_value)
+        else:
+            env_value = os.environ.get("GCB_RESTORER")
+            if env_value:
+                raw = env_value
+            else:
+                for candidate in default_gcpt_restorer_candidates(root):
+                    if candidate.exists():
+                        return str(candidate), "auto", None
+                return None, "auto", "missing gcpt restorer; set GCB_RESTORER, pass --gcpt-restorer <path>, or build NEMU/resource/gcpt_restore/build/gcpt.bin"
+    if raw == "none":
+        return "None", "none", None
+    path, error = normalize_gcpt_restorer_path(root, raw)
+    return path, raw, error
+
+
+def run_spec2006_one(
+    root: Path,
+    entry: dict,
+    output_dir: Path,
+    timeout: int,
+    difftest_mode: str,
+    difftest_ref_so: Path | None,
+    gcpt_restorer: str,
+    maxinsts: int | None,
+    dry_run: bool,
+    run_mode: str,
+) -> dict:
+    entry_id = entry["id"]
+    difftest_enabled = difftest_mode == "enabled"
+    checkpoint = resolve_repo_path(root, Path(entry["checkpoint"]))
+    timeout_seconds = timeout or int(entry.get("timeout_seconds") or 300)
+    if run_mode == "complete":
+        maxinsts_value = maxinsts if maxinsts and maxinsts > 0 else None
+    else:
+        maxinsts_value = maxinsts or int(entry.get("maxinsts") or 10000)
+    maxinsts_disabled = maxinsts_value is None
+    detected_layout = detect_gcpt_layout(checkpoint) if checkpoint and checkpoint.exists() else {"layout": "unknown"}
+    gcpt_layout = effective_gcpt_layout(entry, detected_layout)
+    rvh_checkpoint = requires_rvh_checkpoint(entry, gcpt_layout)
+    h_aware_ref_required = requires_h_aware_ref(entry, gcpt_layout)
+    resolved_ref_so = resolve_difftest_ref_so(root, difftest_ref_so, h_aware_ref_required) if difftest_enabled else None
+    restorer_path, restorer_policy, restorer_error = resolve_gcpt_restorer(root, entry, gcpt_restorer, gcpt_layout)
+    base = {
+        "id": entry_id,
+        "suite": "spec2006",
+        "benchmark": entry.get("benchmark"),
+        "workload": entry.get("workload"),
+        "point": entry.get("point"),
+        "backend": "gem5",
+        "checkpoint": str(checkpoint) if checkpoint else None,
+        "checkpoint_metadata": entry,
+        "difftest_enabled": difftest_enabled,
+        "difftest_ref_so": str(resolved_ref_so) if resolved_ref_so else None,
+        "gcpt_restorer": restorer_path,
+        "gcpt_restorer_policy": restorer_policy,
+        "gcpt_layout": gcpt_layout,
+        "gcpt_layout_evidence": detected_layout,
+        "requires_rvh": rvh_checkpoint,
+        "requires_h_aware_ref": h_aware_ref_required,
+        "maxinsts": maxinsts_value,
+        "maxinsts_disabled": maxinsts_disabled,
+        "run_mode": run_mode,
+        "completion_policy": "natural_exit_marker" if run_mode == "complete" else "bounded_canary_after_checkpoint_entry",
+        "complete_run_stop_condition": (
+            "pass only when checkpoint enters simulation and GEM5 exits naturally with m5_exit/good trap/equivalent marker"
+            if run_mode == "complete"
+            else "pass when checkpoint enters simulation and reaches maxinsts or bounded timeout"
+        ),
+        "timeout_seconds": timeout_seconds,
+        "started_at": None,
+        "ended_at": None,
+        "wall_time_seconds": None,
+        "host_time": None,
+        "timed_out": False,
+        "killed": False,
+        "dry_run": dry_run,
+    }
+    if checkpoint is None or not checkpoint.exists():
+        return {**base, "status": "blocked_missing_artifact", "reason": "missing SPEC2006 checkpoint"}
+    if difftest_enabled and (resolved_ref_so is None or not resolved_ref_so.exists()):
+        return {**base, "status": "blocked_missing_artifact", "reason": "missing difftest reference shared library"}
+    if difftest_enabled and h_aware_ref_required and difftest_ref_so is None and not os.environ.get("GCBH_REF_SO"):
+        return {
+            **base,
+            "status": "blocked_missing_artifact",
+            "reason": "embedded RVH checkpoint requires an H-aware difftest ref; pass --difftest-ref-so or set GCBH_REF_SO",
+        }
+    if restorer_error:
+        return {**base, "status": "blocked_missing_artifact", "reason": restorer_error}
+    gem5 = root / "GEM5" / "build" / "RISCV" / "gem5.opt"
+    config = root / "GEM5" / "configs" / "example" / "kmhv3.py"
+    if not gem5.exists() or not config.exists():
+        return {**base, "status": "blocked_missing_artifact", "reason": "missing gem5 binary or kmhv3.py", "gem5": str(gem5), "config": str(config)}
+    outdir = output_dir / "m5out" / entry_id
+    log_path = output_dir / "logs" / f"{entry_id}.log"
+    stats_path = outdir / "stats.txt"
+    command = [
+        str(gem5),
+        "-d",
+        str(outdir),
+        str(config),
+        "--mem-type",
+        "DDR4_2400_8x8",
+    ]
+    if difftest_enabled:
+        command.extend(["--enable-difftest", f"--difftest-ref-so={resolved_ref_so}"])
+    else:
+        command.append("--disable-difftest")
+    if rvh_checkpoint:
+        command.extend(["--restore-rvh-cpt", "--enable-h-gcpt"])
+    command.extend([f"--generic-rv-cpt={checkpoint}", f"--gcpt-restorer={restorer_path}"])
+    if maxinsts_value is not None:
+        command.append(f"--maxinsts={maxinsts_value}")
+    if dry_run:
+        return {
+            **base,
+            "status": "unsupported",
+            "reason": "dry-run only",
+            "command": command,
+            "log_path": str(log_path),
+            "stats_path": str(stats_path),
+        }
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    started_at = iso_now()
+    start = time.monotonic()
+    rc = None
+    timed_out = False
+    killed = False
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            process = subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            rc = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout_seconds}s\n")
+            timed_out = True
+            killed = terminate_process_group(process, log)
+    ended_at = iso_now()
+    wall_time = round(time.monotonic() - start, 3)
+    status, reason = classify_log(log_path, rc, timed_out)
+    difftest_evidence = difftest_log_evidence(log_path)
+    gcpt_evidence = gcpt_log_evidence(log_path)
+    if status == "timeout" and gcpt_evidence["entered_simulation"] and run_mode == "complete":
+        reason = "entered checkpoint simulation but did not naturally complete before long timeout"
+    elif status == "timeout" and gcpt_evidence["entered_simulation"]:
+        reason = "entered checkpoint simulation and reached bounded timeout"
+    elif status == "timeout":
+        status = "fail"
+        reason = "timed out before checkpoint simulation entry"
+    if run_mode == "complete" and status == "unsupported" and gcpt_evidence["entered_simulation"] and gcpt_evidence["reached_maxinsts"]:
+        status = "timeout"
+        reason = "reached instruction budget before natural checkpoint completion"
+    elif run_mode == "complete" and status == "unsupported" and gcpt_evidence["entered_simulation"]:
+        status = "fail"
+        reason = "gem5 exited after checkpoint entry without a complete-run marker"
+    elif status == "unsupported" and gcpt_evidence["entered_simulation"] and gcpt_evidence["reached_maxinsts"]:
+        status = "pass"
+        reason = "entered checkpoint simulation and reached max instruction count"
+    if run_mode == "complete" and status == "pass" and not gcpt_evidence["entered_simulation"]:
+        status = "fail"
+        reason = "complete-run marker appeared before checkpoint simulation entry"
+    if difftest_enabled and status in {"pass", "timeout", "unsupported"} and not difftest_evidence["enabled"]:
+        status = "fail"
+        reason = "checkpoint run did not emit difftest enable marker"
+    host_seconds = parse_host_seconds(stats_path)
+    return {
+        **base,
+        "status": status,
+        "reason": reason,
+        "return_code": rc,
+        "command": command,
+        "log_path": str(log_path),
+        "stats_path": str(stats_path) if stats_path.exists() else None,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "wall_time_seconds": wall_time,
+        "host_time": wall_time,
+        "gem5_host_seconds": host_seconds,
+        "timed_out": timed_out,
+        "killed": killed,
+        "stop_reason": reason,
+        "difftest_log_evidence": difftest_evidence,
+        "gcpt_log_evidence": gcpt_evidence,
+    }
+
+
 def reuse_existing_rows(source: Path, tests: list[dict]) -> list[dict]:
     source_payload = load_manifest(source)
     source_by_id = {row.get("id"): row for row in source_payload.get("results", []) if row.get("id")}
@@ -486,6 +805,103 @@ def run_blocked_stage(args: argparse.Namespace, stage: str) -> int:
     return 0
 
 
+def run_spec2006(args: argparse.Namespace) -> int:
+    root = args.repo_root.resolve()
+    if not args.manifest.exists():
+        return run_blocked_stage(args, "spec2006")
+    manifest = load_manifest(args.manifest)
+    entries = select_spec2006_entries(manifest, set(args.test), args.spec2006_canary)
+    if not entries:
+        target = "gem5-spec2006-full-checkpoint" if args.spec2006_run_mode == "complete" else "gem5-spec2006-checkpoint"
+        payload = {
+            "schema_version": 1,
+            "layer": "l3",
+            "target": target,
+            "stage": "spec2006",
+            "run_mode": args.spec2006_run_mode,
+            "status": "blocked_missing_artifact",
+            "reason": "no SPEC2006 checkpoint manifest entries matched requested filters",
+            "summary": {"total": 0, "by_status": {}, "by_suite": {}},
+            "results": [],
+            "manifest": str(args.manifest),
+        }
+        write_payload(args.output, payload)
+        return 1
+    rows = [
+        run_spec2006_one(
+            root,
+            entry,
+            args.output.parent,
+            args.per_test_timeout,
+            args.difftest_mode,
+            args.difftest_ref_so,
+            args.gcpt_restorer,
+            args.maxinsts,
+            args.dry_run,
+            args.spec2006_run_mode,
+        )
+        for entry in entries
+    ]
+    summary = summarize(rows)
+    hard_statuses = ("fail", "blocked_missing_artifact", "blocked_env", "timeout") if args.spec2006_run_mode == "complete" else ("fail", "blocked_missing_artifact", "blocked_env")
+    hard_blocking = sum(summary["by_status"].get(status, 0) for status in hard_statuses)
+    blocking = hard_blocking + summary["by_status"].get("unsupported", 0)
+    if args.dry_run and hard_blocking:
+        if summary["by_status"].get("blocked_missing_artifact", 0):
+            status = "blocked_missing_artifact"
+            reason = "dry-run input validation found missing artifacts"
+        elif summary["by_status"].get("blocked_env", 0):
+            status = "blocked_env"
+            reason = "dry-run input validation found environment blockers"
+        else:
+            status = "fail"
+            reason = "dry-run input validation failed"
+    elif args.dry_run:
+        status = "unsupported"
+        reason = "dry-run only"
+    else:
+        if blocking == 0 and rows:
+            status = "pass"
+            reason = (
+                "all selected SPEC2006 checkpoint entries reached complete-run exit criteria"
+                if args.spec2006_run_mode == "complete"
+                else "all selected SPEC2006 checkpoint entries reached bounded canary criteria"
+            )
+        elif args.spec2006_run_mode == "complete" and summary["by_status"].get("timeout", 0) and not summary["by_status"].get("fail", 0):
+            status = "timeout"
+            reason = "selected SPEC2006 checkpoint entries did not naturally complete before long timeout"
+        elif summary["by_status"].get("blocked_missing_artifact", 0) and not summary["by_status"].get("fail", 0) and not summary["by_status"].get("blocked_env", 0):
+            status = "blocked_missing_artifact"
+            reason = "selected SPEC2006 checkpoint entries are blocked by missing artifacts"
+        elif summary["by_status"].get("blocked_env", 0) and not summary["by_status"].get("fail", 0):
+            status = "blocked_env"
+            reason = "selected SPEC2006 checkpoint entries are blocked by execution environment"
+        else:
+            status = "fail"
+            reason = "selected SPEC2006 checkpoint entries did not satisfy canary criteria"
+    target = "gem5-spec2006-full-checkpoint" if args.spec2006_run_mode == "complete" else "gem5-spec2006-checkpoint"
+    payload = {
+        "schema_version": 1,
+        "layer": "l3",
+        "target": target,
+        "stage": "spec2006",
+        "run_mode": args.spec2006_run_mode,
+        "status": status,
+        "reason": reason,
+        "manifest": str(args.manifest),
+        "canary_id": manifest.get("canary_id"),
+        "difftest": {
+            "mode": args.difftest_mode,
+            "enabled": args.difftest_mode == "enabled",
+            "ref_so": str(resolve_difftest_ref_so(root, args.difftest_ref_so)) if args.difftest_mode == "enabled" else None,
+        },
+        "summary": summary,
+        "results": rows,
+    }
+    write_payload(args.output, payload)
+    return 0 if status in {"pass", "unsupported"} else 1
+
+
 def main(argv: list[str]) -> int:
     root = repo_root()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -506,15 +922,24 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--run-known-unsupported", action="store_true", help="execute tests that are otherwise classified as known unsupported")
     parser.add_argument("--difftest-mode", choices=("disabled", "enabled"), default="disabled", help="run GEM5 with difftest disabled or enabled")
     parser.add_argument("--difftest-ref-so", type=Path, default=None, help="reference model shared library for --difftest-mode enabled; defaults to XiangShan/ready-to-run/riscv64-nemu-interpreter-so")
+    parser.add_argument("--dry-run", action="store_true", help="emit selected commands without launching GEM5")
+    parser.add_argument("--spec2006-canary", action="store_true", help="select the manifest canary entry for --stage spec2006")
+    parser.add_argument("--spec2006-run-mode", choices=("bounded", "complete"), default="bounded", help="bounded keeps canary maxinsts semantics; complete waits for natural checkpoint completion")
+    parser.add_argument("--gcpt-restorer", default="auto", help="GCPT restorer policy for SPEC2006: auto, none, or a path")
+    parser.add_argument("--maxinsts", type=int, default=None, help="bounded instruction limit for SPEC2006 checkpoint canaries; in complete mode, omit or pass 0 to disable")
     args = parser.parse_args(argv)
     if args.output is None:
         if args.difftest_mode == "enabled" and args.stage == "isa":
             output_leaf = args.suite or args.stage
             args.output = root / "build" / "validation" / "l3-gem5-enable-difftest" / output_leaf / "results.json"
+        elif args.stage == "spec2006" and args.spec2006_run_mode == "complete":
+            args.output = root / "build" / "validation" / "l3-gem5" / "spec2006-full" / "results.json"
         else:
             args.output = root / "build" / "validation" / "l3-gem5" / args.stage / "results.json"
     if args.stage == "isa":
         return run_isa(args)
+    if args.stage == "spec2006":
+        return run_spec2006(args)
     return run_blocked_stage(args, args.stage)
 
 

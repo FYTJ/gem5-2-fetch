@@ -150,8 +150,130 @@ def check_spec2006_missing_artifact_contract(collector) -> None:
         detail = payload["detail_summary"]
         assert detail["gem5_l3_spec2006_status"] == "blocked_missing_artifact", detail
         assert detail["gem5_l3_spec2006_manifest_contract"] == contract, detail
-        gate = next(row for row in payload["gates"] if row["target"] == "spec2006-checkpoint")
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-checkpoint")
         assert gate["effective_status"] == "blocked_missing_artifact", gate
+
+
+def check_spec2006_checkpoint_targets_are_separate(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006/results.json",
+            {
+                "status": "timeout",
+                "reason": "entered checkpoint simulation and reached bounded timeout",
+                "summary": {"total": 1, "by_status": {"timeout": 1}},
+                "results": [
+                    {
+                        "id": "perlbench_diffmail-12",
+                        "status": "timeout",
+                        "host_time": 12.5,
+                        "wall_time_seconds": 12.5,
+                        "timeout_seconds": 15,
+                        "stop_reason": "bounded timeout",
+                        "killed": True,
+                        "log_path": "gem5.log",
+                        "stats_path": "stats.txt",
+                    }
+                ],
+            },
+        )
+        write_json(
+            root,
+            "build/validation/l3-xiangshan/spec2006/results.json",
+            {
+                "status": "blocked_env",
+                "reason": "not on eda-00",
+                "summary": {"total": 1, "by_status": {"blocked_env": 1}},
+                "results": [
+                    {
+                        "id": "perlbench_diffmail-12",
+                        "status": "blocked_env",
+                        "wall_time_seconds": None,
+                        "timeout_seconds": 15,
+                        "stop_reason": "not on eda-00",
+                        "killed": False,
+                        "log_path": "xiangshan.log",
+                        "stats_path": None,
+                    }
+                ],
+            },
+        )
+        payload = collector.build_summary(root)
+        gem5_gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-checkpoint")
+        xs_gate = next(row for row in payload["gates"] if row["target"] == "xiangshan-spec2006-checkpoint")
+        assert gem5_gate["effective_status"] == "timeout", gem5_gate
+        assert xs_gate["effective_status"] == "blocked_env", xs_gate
+        timing = payload["detail_summary"]["spec2006_canary_timing"]
+        assert len(timing) == 2, timing
+        assert any(row["target"] == "gem5-spec2006-checkpoint" and row["wall_time_seconds"] == 12.5 for row in timing), timing
+        assert any(row["target"] == "xiangshan-spec2006-checkpoint" and row["stop_reason"] == "not on eda-00" for row in timing), timing
+
+
+def check_spec2006_unsupported_detail_does_not_pass(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006/results.json",
+            {
+                "status": "fail",
+                "reason": "selected SPEC2006 checkpoint entries did not satisfy canary criteria",
+                "summary": {"total": 1, "by_status": {"unsupported": 1}},
+                "results": [
+                    {
+                        "id": "perlbench_diffmail-12",
+                        "status": "unsupported",
+                        "reason": "no recognized pass/fail marker",
+                        "wall_time_seconds": 2.5,
+                    }
+                ],
+            },
+        )
+        payload = collector.build_summary(root)
+        gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-checkpoint")
+        assert gate["effective_status"] == "fail", gate
+
+
+def check_spec2006_full_timeout_is_separate(collector) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006/results.json",
+            {
+                "status": "pass",
+                "reason": "bounded canary pass",
+                "results": [{"id": "perlbench_diffmail-12", "status": "pass", "wall_time_seconds": 2.5}],
+            },
+        )
+        write_json(
+            root,
+            "build/validation/l3-gem5/spec2006-full/results.json",
+            {
+                "status": "timeout",
+                "reason": "selected SPEC2006 checkpoint entries did not naturally complete before long timeout",
+                "summary": {"total": 1, "by_status": {"timeout": 1}},
+                "results": [
+                    {
+                        "id": "perlbench_diffmail-12",
+                        "status": "timeout",
+                        "run_mode": "complete",
+                        "wall_time_seconds": 3600.0,
+                        "timeout_seconds": 3600,
+                        "stop_reason": "entered checkpoint simulation but did not naturally complete before long timeout",
+                    }
+                ],
+            },
+        )
+        payload = collector.build_summary(root)
+        bounded_gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-checkpoint")
+        full_gate = next(row for row in payload["gates"] if row["target"] == "gem5-spec2006-full-checkpoint")
+        assert bounded_gate["effective_status"] == "pass", bounded_gate
+        assert full_gate["effective_status"] == "timeout", full_gate
+        timing = payload["detail_summary"]["spec2006_canary_timing"]
+        assert any(row["target"] == "gem5-spec2006-full-checkpoint" and row["wall_time_seconds"] == 3600.0 for row in timing), timing
 
 
 def check_medium_missing_artifact_is_not_unsupported(collector) -> None:
@@ -378,6 +500,9 @@ def main() -> int:
         check_non_pass_stats_are_debug_only,
         check_pass_without_metrics_is_not_performance_valid,
         check_spec2006_missing_artifact_contract,
+        check_spec2006_checkpoint_targets_are_separate,
+        check_spec2006_unsupported_detail_does_not_pass,
+        check_spec2006_full_timeout_is_separate,
         check_medium_missing_artifact_is_not_unsupported,
         check_eda00_smoke_overrides_local_guard,
         check_xiangshan_complete_suite_overrides_smoke,

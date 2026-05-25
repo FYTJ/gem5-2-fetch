@@ -160,6 +160,18 @@ rv64mi-p-zicntr
 - XiangShan Chisel/RTL：后续 emu/difftest runner 必须在 q2 `eda-00` 消费同一 77 项 ID 列表；不能用旧的 5 项 smoke 结果替代完整 suite，也不能把被排除的 `rv64mi-p-pmpaddr` 写成通过。
 - 该 suite 只证明轻量功能正确性门槛，不证明 SPEC2006、medium workload、性能 delta、IPC 对齐、TAGE/base-only 行为差异或 BPU 替换已经完成。
 
+### SPEC2006 checkpoint canary
+
+SPEC2006 checkpoint输入必须放在主仓ignored cache中，默认路径为`.cache/spec2006-ckpts/chp/`，并由`tools/validation/spec2006-checkpoint-manifest`生成`build/validation/spec2006-checkpoints/manifest.json`。checkpoint本体和日志不得进入git历史。
+
+GEM5侧的最小checkpoint canary使用`tools/validation/run-l3-gem5 --stage spec2006 --spec2006-canary --difftest-mode enabled`，必须显式提供与宿主架构匹配的`--difftest-ref-so`，并通过`--gcpt-restorer <path|auto|none>`明确restorer策略。runner会先检查checkpoint布局：旧固定payload布局才允许标准NEMU`gcpt_restore`；当前`chp`批次是内嵌restorer的`embedded-rvh`布局，`auto`会解析为`none`，并生成`--restore-rvh-cpt --enable-h-gcpt --gcpt-restorer=None`。强制给这类checkpoint传标准外部restorer应被记录为启动前blocked，而不是进入长仿真。`requires_h_aware_ref=true`时，未显式提供H-aware ref且未设置`GCBH_REF_SO`也应在dry-run阶段blocked。非RVH旧布局的`auto`会优先使用manifest或`GCB_RESTORER`，也会识别`NEMU/resource/gcpt_restore/build/gcpt.bin`和本仓NEMU外部副本中的`resource/gcpt_restore/build/gcpt.bin`；传入`gcpt_restore`目录时会解析到目录下的`build/gcpt.bin`。该路径使用GCPT恢复，不使用`--raw-cpt`。默认bounded canary结果路径是`build/validation/l3-gem5/spec2006/results.json`，collector中的target为`gem5-spec2006-checkpoint`。
+
+GEM5完整checkpoint运行必须显式传`--spec2006-run-mode complete`。该模式默认不向GEM5命令传`--maxinsts`，结果默认写入`build/validation/l3-gem5/spec2006-full/results.json`，collector中的target为`gem5-spec2006-full-checkpoint`。完整运行只有在checkpoint已恢复并进入仿真循环后，出现`m5_exit instruction encountered`、GOOD TRAP或等价自然完成marker时才算pass；长超时为timeout，指令预算停止、difftest mismatch/panic、commit stuck或未识别退出都不是pass。它用于验证完整ckpt能否自然完成，不能用bounded canary的`maxinsts`受控退出替代。
+
+XiangShan Chisel/RTL侧的最小checkpoint canary使用`tools/validation/run-l3-xiangshan --stage spec2006 --spec2006-canary --diff <ref-so>`。本机和q2登录节点只能dry-run或返回`blocked_env`；真实emu/difftest仍只能在q2 `eda-00`运行。默认结果路径是`build/validation/l3-xiangshan/spec2006/results.json`，collector中的target为`xiangshan-spec2006-checkpoint`。
+
+两端最终canary都必须记录`started_at`、`ended_at`、`wall_time_seconds`、`timeout_seconds`、`stop_reason`、`killed`、checkpoint id、命令行、日志路径和stats路径或等价字段。该耗时只用于记录最小完整ckpt canary的执行成本，不构成GEM5与Chisel/RTL性能比较，也不证明全量SPEC2006跑分。
+
 ### GEM5 模拟器
 
 GEM5 的BTB/TAGE模块级单测和禁用difftest的轻量smoke仍可默认在远程 `linux` 主机运行，进入 Linux 映射路径下的 `GEM5/`。为避免误用 Linuxbrew Python 3.14 导致 `libpython3.14.so.1.0` 缺失，GEM5 构建和单测默认先限定系统 PATH：

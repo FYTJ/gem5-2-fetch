@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Generate and validate SPEC2006 GCPT checkpoint manifests."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from spec2006_gcpt_layout import detect_gcpt_layout
+
+
+CHECKPOINT_RE = re.compile(r"^_(?P<point>\d+)_(?P<weight>[0-9.]+)_\.zstd$")
+WORKLOAD_BENCHMARKS = {
+    "perlbench_checkspam": "400.perlbench",
+    "perlbench_diffmail": "400.perlbench",
+    "perlbench_splitmail": "400.perlbench",
+    "mcf": "429.mcf",
+}
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def rel_or_abs(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def resolve_path(path: str, root: Path) -> Path:
+    candidate = Path(path)
+    return candidate if candidate.is_absolute() else root / candidate
+
+
+def load_cluster_metadata(checkpoint_root: Path) -> dict[str, Any]:
+    metadata_path = checkpoint_root / "cluster-0-0.json"
+    if not metadata_path.exists():
+        return {}
+    return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+
+def cluster_for_workload(cluster: dict[str, Any], workload: str) -> dict[str, Any]:
+    if workload in cluster and isinstance(cluster[workload], dict):
+        return cluster[workload]
+    return {}
+
+
+def parse_checkpoint(path: Path, checkpoint_root: Path, repo: Path, cluster: dict[str, Any]) -> dict[str, Any]:
+    match = CHECKPOINT_RE.match(path.name)
+    if not match:
+        raise ValueError(f"checkpoint filename does not match expected pattern: {path}")
+    point = match.group("point")
+    filename_weight = match.group("weight").rstrip(".")
+    try:
+        workload = path.relative_to(checkpoint_root / "temp").parts[0]
+    except ValueError as exc:
+        raise ValueError(f"checkpoint is not under temp/: {path}") from exc
+    metadata = cluster_for_workload(cluster, workload)
+    points = metadata.get("points", {}) if isinstance(metadata.get("points", {}), dict) else {}
+    cluster_weight = points.get(point)
+    layout = detect_gcpt_layout(path)
+    is_embedded_rvh = layout.get("layout") == "embedded-rvh"
+    entry = {
+        "id": f"{workload}-{point}",
+        "benchmark": WORKLOAD_BENCHMARKS.get(workload, workload),
+        "workload": workload,
+        "point": point,
+        "checkpoint": rel_or_abs(path, repo),
+        "checkpoint_format": "zstd",
+        "compressed_bytes": path.stat().st_size,
+        "filename_weight": filename_weight,
+        "cluster_weight": cluster_weight,
+        "cluster_insts": metadata.get("insts"),
+        "expected_exit": "maxinsts_or_timeout_after_entry",
+        "maxinsts": 10000,
+        "timeout_seconds": 300,
+        "gcpt_layout": layout.get("layout"),
+        "gcpt_layout_evidence": layout,
+        "gcpt_restorer": "none" if is_embedded_rvh else "auto",
+        "difftest_required": True,
+        "requires_external_restorer": layout.get("requires_external_restorer"),
+        "requires_rvh": bool(layout.get("requires_rvh")),
+        "requires_h_aware_ref": bool(layout.get("requires_h_aware_ref")),
+        "isa_profile": "rv64gcbh" if is_embedded_rvh else "rv64gcb",
+        "vector": "unknown",
+        "canary": False,
+    }
+    return entry
+
+
+def build_manifest(checkpoint_root: Path, repo: Path) -> dict[str, Any]:
+    if not checkpoint_root.exists():
+        raise FileNotFoundError(f"checkpoint root does not exist: {checkpoint_root}")
+    cluster_path = checkpoint_root / "cluster-0-0.json"
+    temp_path = checkpoint_root / "temp"
+    if not cluster_path.exists():
+        raise FileNotFoundError(f"missing cluster metadata: {cluster_path}")
+    if not temp_path.exists():
+        raise FileNotFoundError(f"missing checkpoint temp directory: {temp_path}")
+    cluster = load_cluster_metadata(checkpoint_root)
+    entries = [parse_checkpoint(path, checkpoint_root, repo, cluster) for path in sorted(temp_path.glob("*/*/*.zstd"))]
+    if not entries:
+        raise ValueError(f"no .zstd checkpoints found under {temp_path}")
+    entries.sort(key=lambda item: (item["compressed_bytes"], item["checkpoint"]))
+    canary = entries[0]
+    canary["canary"] = True
+    entries.sort(key=lambda item: (item["benchmark"], item["workload"], int(item["point"]), item["checkpoint"]))
+    default_layout = entries[0].get("gcpt_layout", "unknown")
+    all_embedded_rvh = all(entry.get("gcpt_layout") == "embedded-rvh" for entry in entries)
+    return {
+        "schema_version": 1,
+        "kind": "spec2006-gcpt-checkpoints",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "checkpoint_root": rel_or_abs(checkpoint_root, repo),
+        "source_note": "generated from user-provided chp checkpoint directory",
+        "isa_profile": "rv64gcbh" if all_embedded_rvh else "rv64gcb",
+        "vector": "unknown",
+        "default_gcpt_layout": "embedded-rvh" if all_embedded_rvh else default_layout,
+        "default_expected_exit": "maxinsts_or_timeout_after_entry",
+        "default_maxinsts": 10000,
+        "default_timeout_seconds": 300,
+        "default_gcpt_restorer": "none" if all_embedded_rvh else "auto",
+        "requires_rvh": all_embedded_rvh,
+        "requires_h_aware_ref": all_embedded_rvh,
+        "canary_id": canary["id"],
+        "benchmarks": entries,
+    }
+
+
+def validate_manifest(manifest: dict[str, Any], repo: Path) -> list[str]:
+    errors: list[str] = []
+    if manifest.get("schema_version") != 1:
+        errors.append("schema_version must be 1")
+    entries = manifest.get("benchmarks")
+    if not isinstance(entries, list) or not entries:
+        errors.append("benchmarks must be a non-empty list")
+        return errors
+    seen: set[str] = set()
+    canaries = []
+    required = {"id", "benchmark", "workload", "point", "checkpoint", "checkpoint_format", "expected_exit"}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append(f"benchmarks[{index}] must be an object")
+            continue
+        missing = sorted(required - set(entry))
+        if missing:
+            errors.append(f"{entry.get('id', f'benchmarks[{index}]')} missing fields: {', '.join(missing)}")
+        entry_id = str(entry.get("id", ""))
+        if entry_id in seen:
+            errors.append(f"duplicate checkpoint id: {entry_id}")
+        seen.add(entry_id)
+        if entry.get("checkpoint_format") != "zstd":
+            errors.append(f"{entry_id} checkpoint_format must be zstd")
+        checkpoint = resolve_path(str(entry.get("checkpoint", "")), repo)
+        if not checkpoint.exists():
+            errors.append(f"{entry_id} checkpoint does not exist: {checkpoint}")
+        if entry.get("canary"):
+            canaries.append(entry_id)
+    if len(canaries) != 1:
+        errors.append(f"expected exactly one canary entry, got {len(canaries)}")
+    elif manifest.get("canary_id") != canaries[0]:
+        errors.append("canary_id does not match canary entry")
+    return errors
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    repo = args.repo_root.resolve()
+    manifest = build_manifest(args.root.resolve(), repo)
+    write_json(args.output, manifest)
+    if args.copy_to:
+        args.copy_to.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(args.output, args.copy_to)
+    errors = validate_manifest(manifest, repo)
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+    if args.print_canary:
+        canary = next(entry for entry in manifest["benchmarks"] if entry.get("canary"))
+        print(json.dumps(canary, indent=2, sort_keys=True))
+    else:
+        print(f"wrote {len(manifest['benchmarks'])} checkpoint entries to {args.output}")
+        if args.copy_to:
+            print(f"copied manifest to {args.copy_to}")
+        print(f"canary_id={manifest['canary_id']}")
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    repo = args.repo_root.resolve()
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    errors = validate_manifest(manifest, repo)
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"manifest ok: {len(manifest['benchmarks'])} checkpoint entries, canary_id={manifest.get('canary_id')}")
+    return 0
+
+
+def cmd_canary(args: argparse.Namespace) -> int:
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    canaries = [entry for entry in manifest.get("benchmarks", []) if entry.get("canary")]
+    if len(canaries) != 1:
+        print(f"error: expected exactly one canary entry, got {len(canaries)}", file=sys.stderr)
+        return 1
+    print(json.dumps(canaries[0], indent=2, sort_keys=True))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    root = repo_root()
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    generate = subparsers.add_parser("generate", help="generate a manifest from a checkpoint root")
+    generate.add_argument("--root", type=Path, default=root / ".cache" / "spec2006-ckpts" / "chp")
+    generate.add_argument("--repo-root", type=Path, default=root)
+    generate.add_argument("--output", type=Path, default=root / ".cache" / "spec2006-ckpts" / "chp" / "manifest.json")
+    generate.add_argument("--copy-to", type=Path, default=None)
+    generate.add_argument("--print-canary", action="store_true")
+    generate.set_defaults(func=cmd_generate)
+
+    validate = subparsers.add_parser("validate", help="validate a generated manifest")
+    validate.add_argument("--manifest", type=Path, required=True)
+    validate.add_argument("--repo-root", type=Path, default=root)
+    validate.set_defaults(func=cmd_validate)
+
+    canary = subparsers.add_parser("canary", help="print the selected canary entry")
+    canary.add_argument("--manifest", type=Path, required=True)
+    canary.set_defaults(func=cmd_canary)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

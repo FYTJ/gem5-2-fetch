@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
@@ -22,6 +24,18 @@ def repo_root() -> Path:
 
 def load_manifest(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def resolve_repo_path(root: Path, path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    if path.is_absolute():
+        return path
+    return root / path
 
 
 def test_matches(test: dict, filters: set[str]) -> bool:
@@ -82,6 +96,27 @@ def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, 
     return "unsupported", "no recognized XiangShan pass/fail marker"
 
 
+def difftest_log_evidence(log_path: Path) -> dict:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    enabled_line = None
+    mismatch_line = None
+    checkpoint_line = None
+    for line in text.splitlines():
+        lowered = line.lower()
+        if enabled_line is None and "difftest" in lowered and any(token in lowered for token in ("enable", "ref", "proxy", "nemu")):
+            enabled_line = line.strip()
+        if mismatch_line is None and "difftest" in lowered and any(token in lowered for token in ("fail", "mismatch", "abort")):
+            mismatch_line = line.strip()
+        if checkpoint_line is None and (".zstd" in line or "load" in lowered and "image" in lowered):
+            checkpoint_line = line.strip()
+    return {
+        "enabled_marker": enabled_line,
+        "mismatch_marker": mismatch_line,
+        "checkpoint_marker": checkpoint_line,
+        "enabled": enabled_line is not None,
+    }
+
+
 def summarize(rows: list[dict]) -> dict:
     by_status = {status: 0 for status in STATUS_ENUM}
     by_suite: dict[str, dict[str, int]] = {}
@@ -92,6 +127,47 @@ def summarize(rows: list[dict]) -> dict:
         by_suite.setdefault(suite, {s: 0 for s in STATUS_ENUM})
         by_suite[suite][status] = by_suite[suite].get(status, 0) + 1
     return {"total": len(rows), "by_status": by_status, "by_suite": by_suite}
+
+
+def select_spec2006_entries(manifest: dict, filters: set[str], canary: bool) -> list[dict]:
+    entries = manifest.get("benchmarks", [])
+    if canary:
+        entries = [entry for entry in entries if entry.get("canary") or entry.get("id") == manifest.get("canary_id")]
+    if not filters:
+        return list(entries)
+    selected = []
+    for entry in entries:
+        names = {
+            str(entry.get("id", "")),
+            str(entry.get("benchmark", "")),
+            str(entry.get("workload", "")),
+            f"{entry.get('benchmark', '')}/{entry.get('workload', '')}",
+            f"{entry.get('workload', '')}-{entry.get('point', '')}",
+        }
+        if names & filters:
+            selected.append(entry)
+    return selected
+
+
+def resolve_gcpt_restorer(root: Path, entry: dict, requested: str | None) -> tuple[Path | None, str, str | None]:
+    if requested is None or requested == "auto":
+        manifest_value = entry.get("gcpt_restorer")
+        if manifest_value and manifest_value not in {"auto", "unknown", "none"}:
+            requested = str(manifest_value)
+        else:
+            env_value = os.environ.get("GCB_RESTORER")
+            if env_value:
+                requested = env_value
+            else:
+                return None, "auto", None
+    if requested == "none":
+        return None, "none", None
+    path = resolve_repo_path(root, Path(requested))
+    if path is None:
+        return None, requested, "gcpt restorer path was not resolved"
+    if not path.exists():
+        return path, requested, "missing gcpt restorer"
+    return path, requested, None
 
 
 def write_payload(output: Path, payload: dict) -> None:
@@ -171,6 +247,148 @@ def run_one(root: Path, test: dict, output_dir: Path, timeout: int, emu: Path, r
     }
 
 
+def run_spec2006_one(
+    root: Path,
+    entry: dict,
+    output_dir: Path,
+    timeout: int,
+    emu: Path,
+    ref: Path,
+    gcpt_restorer: str | None,
+    maxinsts: int | None,
+    dry_run: bool,
+    on_eda: bool,
+) -> dict:
+    entry_id = entry["id"]
+    checkpoint = resolve_repo_path(root, Path(entry["checkpoint"]))
+    restorer, restorer_policy, restorer_error = resolve_gcpt_restorer(root, entry, gcpt_restorer)
+    maxinsts_value = maxinsts or int(entry.get("maxinsts") or 10000)
+    timeout_seconds = timeout or int(entry.get("timeout_seconds") or 300)
+    log_path = output_dir / "logs" / f"{entry_id}.log"
+    command = [str(emu), "-i", str(checkpoint), "--diff", str(ref), "-I", str(maxinsts_value)]
+    if restorer is not None:
+        command.extend(["-r", str(restorer)])
+    base = {
+        "id": entry_id,
+        "suite": "spec2006",
+        "benchmark": entry.get("benchmark"),
+        "workload": entry.get("workload"),
+        "point": entry.get("point"),
+        "backend": "xiangshan",
+        "checkpoint": str(checkpoint) if checkpoint else None,
+        "checkpoint_metadata": entry,
+        "emu": str(emu),
+        "ref": str(ref),
+        "gcpt_restorer": str(restorer) if restorer else None,
+        "gcpt_restorer_policy": restorer_policy,
+        "maxinsts": maxinsts_value,
+        "timeout_seconds": timeout_seconds,
+        "command": command,
+        "log_path": str(log_path),
+        "stats_path": None,
+        "started_at": None,
+        "ended_at": None,
+        "wall_time_seconds": None,
+        "host_time": None,
+        "timed_out": False,
+        "killed": False,
+        "dry_run": dry_run,
+    }
+    if checkpoint is None or not checkpoint.exists():
+        return {**base, "status": "blocked_missing_artifact", "reason": "missing SPEC2006 checkpoint"}
+    if not ref.exists():
+        return {**base, "status": "blocked_missing_artifact", "reason": "missing XiangShan difftest reference"}
+    if restorer_error:
+        return {**base, "status": "blocked_missing_artifact", "reason": restorer_error}
+    if dry_run:
+        return {**base, "status": "unsupported", "reason": "dry-run only"}
+    if not on_eda:
+        return {**base, "status": "blocked_env", "reason": "XiangShan SPEC2006 emu/difftest must run on q2 eda-00, not on this host"}
+    if not emu.exists():
+        return {**base, "status": "blocked_missing_artifact", "reason": "missing XiangShan emu"}
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    started_at = iso_now()
+    start = time.monotonic()
+    rc = None
+    timed_out = False
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        try:
+            completed = subprocess.run(command, cwd=root / "XiangShan", stdout=log, stderr=subprocess.STDOUT, timeout=timeout_seconds, check=False)
+            rc = completed.returncode
+        except subprocess.TimeoutExpired:
+            log.write(f"\nTIMEOUT after {timeout_seconds}s\n")
+            timed_out = True
+    ended_at = iso_now()
+    wall_time = round(time.monotonic() - start, 3)
+    status, reason = classify_log(log_path, rc, timed_out)
+    evidence = difftest_log_evidence(log_path)
+    if timed_out and evidence["checkpoint_marker"]:
+        reason = "entered checkpoint emu and reached bounded timeout"
+    if status in {"pass", "timeout", "unsupported"} and not evidence["enabled"]:
+        status = "fail"
+        reason = "checkpoint run did not emit difftest enable marker"
+    return {
+        **base,
+        "status": status,
+        "reason": reason,
+        "return_code": rc,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "wall_time_seconds": wall_time,
+        "host_time": wall_time,
+        "timed_out": timed_out,
+        "killed": timed_out,
+        "stop_reason": reason,
+        "difftest_log_evidence": evidence,
+    }
+
+
+def run_spec2006(args: argparse.Namespace, root: Path, host: str, on_eda: bool) -> tuple[str, str, list[dict]]:
+    if not args.manifest.exists():
+        reason = "SPEC2006 checkpoint manifest is not provided"
+        return "blocked_missing_artifact", reason, [{"stage": "spec2006", "status": "blocked_missing_artifact", "reason": reason}]
+    manifest = load_manifest(args.manifest)
+    entries = select_spec2006_entries(manifest, set(args.test), args.spec2006_canary)
+    if not entries:
+        reason = "no SPEC2006 checkpoint manifest entries matched requested filters"
+        return "blocked_missing_artifact", reason, []
+    emu = args.emu or root / "XiangShan" / "build" / "emu"
+    ref = args.diff or root / "XiangShan" / "ready-to-run" / "riscv64-nemu-interpreter-so"
+    rows = [
+        run_spec2006_one(
+            root,
+            entry,
+            args.output.parent,
+            args.per_test_timeout,
+            emu,
+            ref,
+            args.gcpt_restorer,
+            args.maxinsts,
+            args.dry_run,
+            on_eda,
+        )
+        for entry in entries
+    ]
+    summary = summarize(rows)
+    blocking = sum(summary["by_status"].get(status, 0) for status in ("fail", "blocked_missing_artifact", "blocked_env"))
+    if args.dry_run and blocking:
+        if summary["by_status"].get("blocked_missing_artifact", 0):
+            return "blocked_missing_artifact", "dry-run input validation found missing artifacts", rows
+        if summary["by_status"].get("blocked_env", 0):
+            return "blocked_env", "dry-run input validation found environment blockers", rows
+        return "fail", "dry-run input validation failed", rows
+    if args.dry_run:
+        return "unsupported", "dry-run only", rows
+    if blocking:
+        if summary["by_status"].get("blocked_missing_artifact", 0) and not summary["by_status"].get("fail", 0) and not summary["by_status"].get("blocked_env", 0):
+            return "blocked_missing_artifact", "selected XiangShan SPEC2006 checkpoint entries are blocked by missing artifacts", rows
+        if summary["by_status"].get("blocked_env", 0) and not summary["by_status"].get("fail", 0) and not summary["by_status"].get("blocked_missing_artifact", 0):
+            return "blocked_env", "selected XiangShan SPEC2006 checkpoint entries are blocked by execution environment", rows
+        return "fail", "selected XiangShan SPEC2006 checkpoint entries did not satisfy canary criteria", rows
+    return "pass", "all selected XiangShan SPEC2006 checkpoint entries reached bounded canary criteria", rows
+
+
 def main(argv: list[str]) -> int:
     root = repo_root()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -190,16 +408,21 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--emu", type=Path, default=None)
     parser.add_argument("--diff", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--spec2006-canary", action="store_true", help="select the manifest canary entry for --stage spec2006")
+    parser.add_argument("--gcpt-restorer", default="auto", help="GCPT restorer policy for SPEC2006: auto, none, or a path")
+    parser.add_argument("--maxinsts", type=int, default=None, help="bounded instruction limit for SPEC2006 checkpoint canaries")
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
     host = socket.gethostname()
     on_eda = host == "eda-00" or "eda-00" in host
     tests: list[dict] = []
-    if args.manifest.exists():
+    if args.stage != "spec2006" and args.manifest.exists():
         filters = set(args.test)
         tests = select_manifest_tests(load_manifest(args.manifest), filters, args.suite, args.suite_source, args.manifest)
-    if args.stage != "isa":
-        reason = "XiangShan medium/SPEC stages are not wired for RV64 sample runner"
+    if args.stage == "spec2006":
+        status, reason, rows = run_spec2006(args, root, host, on_eda)
+    elif args.stage != "isa":
+        reason = "XiangShan medium stages are not wired for RV64 sample runner"
         rows = blocked_rows(tests, reason, "unsupported")
         status = "unsupported"
     elif args.dry_run:
@@ -235,11 +458,12 @@ def main(argv: list[str]) -> int:
     payload = {
         "schema_version": 1,
         "layer": "l3",
-        "target": "xiangshan-emu",
+        "target": "xiangshan-spec2006-checkpoint" if args.stage == "spec2006" else "xiangshan-emu",
         "stage": args.stage,
         "host": host,
         "suite": args.suite,
         "suite_source": str(args.suite_source) if args.suite else None,
+        "manifest": str(args.manifest) if args.stage == "spec2006" else None,
         "status": status,
         "reason": reason,
         "summary": summary,

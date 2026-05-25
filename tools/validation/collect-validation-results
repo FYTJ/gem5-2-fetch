@@ -51,7 +51,9 @@ DETAIL_RESULT_PATHS = {
     "gem5_l3_isa": "build/validation/l3-gem5/isa/results.json",
     "gem5_l3_medium": "build/validation/l3-gem5/medium/results.json",
     "gem5_l3_spec2006": "build/validation/l3-gem5/spec2006/results.json",
+    "gem5_l3_spec2006_full": "build/validation/l3-gem5/spec2006-full/results.json",
     "xiangshan_l3_isa": "build/validation/l3-xiangshan/isa/results.json",
+    "xiangshan_l3_spec2006": "build/validation/l3-xiangshan/spec2006/results.json",
     "xiangshan_l3_eda00_smoke": "build/validation/l3-xiangshan/eda00-smoke/results.json",
     "xiangshan_l3_local_blocker": "build/validation/l3-xiangshan/local-guard/results.json",
 }
@@ -106,6 +108,13 @@ def flatten_harness_results(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def first_result(payload: dict[str, Any]) -> dict[str, Any]:
+    results = payload.get("results")
+    if isinstance(results, list) and results and isinstance(results[0], dict):
+        return results[0]
+    return {}
+
+
 def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> list[dict[str, Any]]:
     gem5_l3 = gem5_l3_isa_detail(details)
     wally_l3 = details.get("wally_l3_isa", {})
@@ -129,7 +138,9 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
         ),
         ("wally_l3_isa", "l3", "wally-verilator-isa", "linux", "supported-cross-77 RV64 suite"),
         ("gem5_l3_medium", "l3", "gem5-medium", "linux", "CoreMark/Dhrystone/microbench"),
-        ("gem5_l3_spec2006", "l3", "spec2006-checkpoint", "linux/eda-00", "SPEC2006 checkpoint manifest"),
+        ("gem5_l3_spec2006", "l3", "gem5-spec2006-checkpoint", "linux", "SPEC2006 checkpoint manifest"),
+        ("gem5_l3_spec2006_full", "l3", "gem5-spec2006-full-checkpoint", "linux", "SPEC2006 checkpoint complete run"),
+        ("xiangshan_l3_spec2006", "l3", "xiangshan-spec2006-checkpoint", "eda-00", "SPEC2006 checkpoint manifest"),
         ("xiangshan_l3", "l3", "xiangshan-emu-isa", "eda-00", "supported-cross-77 RV64 suite"),
     )
     rows = []
@@ -161,6 +172,7 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
         status = payload.get("status")
         if status in {None, "missing"}:
             continue
+        detail_row = first_result(payload)
         rows.append(
             {
                 "source": source,
@@ -171,13 +183,13 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
                 "status": status,
                 "return_code": None,
                 "exit_reason": payload.get("reason"),
-                "log_path": payload.get("path"),
-                "stats_path": None,
+                "log_path": detail_row.get("log_path") or payload.get("path"),
+                "stats_path": detail_row.get("stats_path"),
                 "simInsts": None,
                 "instrCnt": None,
                 "cycles": None,
                 "IPC": None,
-                "host_time": None,
+                "host_time": detail_row.get("host_time") or detail_row.get("wall_time_seconds"),
             }
         )
     return rows
@@ -247,8 +259,12 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("gem5_l3_difftest_linux_aarch64_nemu", {}).get("status")
     if target == "gem5-medium":
         return details.get("gem5_l3_medium", {}).get("status")
-    if target == "spec2006-checkpoint":
+    if target == "gem5-spec2006-checkpoint":
         return details.get("gem5_l3_spec2006", {}).get("status")
+    if target == "gem5-spec2006-full-checkpoint":
+        return details.get("gem5_l3_spec2006_full", {}).get("status")
+    if target == "xiangshan-spec2006-checkpoint":
+        return details.get("xiangshan_l3_spec2006", {}).get("status")
     if target == "xiangshan-emu-isa":
         return xiangshan_l3_detail(details).get("status")
     return None
@@ -295,6 +311,35 @@ def run_time_summary(gates: list[dict[str, Any]]) -> dict[str, Any]:
             )
     total_host_time = sum(row["host_time"] for row in rows if isinstance(row.get("host_time"), (int, float)))
     return {"rows": rows, "total_host_time": round(total_host_time, 3)}
+
+
+def spec2006_canary_timing(details: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for key, target in (
+        ("gem5_l3_spec2006", "gem5-spec2006-checkpoint"),
+        ("gem5_l3_spec2006_full", "gem5-spec2006-full-checkpoint"),
+        ("xiangshan_l3_spec2006", "xiangshan-spec2006-checkpoint"),
+    ):
+        payload = details.get(key, {})
+        row = first_result(payload)
+        if not row:
+            continue
+        rows.append(
+            {
+                "target": target,
+                "status": row.get("status"),
+                "checkpoint_id": row.get("id"),
+                "started_at": row.get("started_at"),
+                "ended_at": row.get("ended_at"),
+                "wall_time_seconds": row.get("wall_time_seconds"),
+                "timeout_seconds": row.get("timeout_seconds"),
+                "stop_reason": row.get("stop_reason") or row.get("reason"),
+                "killed": row.get("killed"),
+                "log_path": row.get("log_path"),
+                "stats_path": row.get("stats_path"),
+            }
+        )
+    return rows
 
 
 def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) -> dict[str, Any]:
@@ -398,8 +443,14 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_medium_status": details.get("gem5_l3_medium", {}).get("status"),
             "gem5_l3_medium_missing_artifact": details.get("gem5_l3_medium", {}).get("missing_artifact"),
             "gem5_l3_spec2006_status": details.get("gem5_l3_spec2006", {}).get("status"),
+            "gem5_l3_spec2006_summary": details.get("gem5_l3_spec2006", {}).get("summary"),
             "gem5_l3_spec2006_missing_artifact": details.get("gem5_l3_spec2006", {}).get("missing_artifact"),
             "gem5_l3_spec2006_manifest_contract": details.get("gem5_l3_spec2006", {}).get("manifest_contract"),
+            "gem5_l3_spec2006_full_status": details.get("gem5_l3_spec2006_full", {}).get("status"),
+            "gem5_l3_spec2006_full_summary": details.get("gem5_l3_spec2006_full", {}).get("summary"),
+            "xiangshan_l3_spec2006_status": details.get("xiangshan_l3_spec2006", {}).get("status"),
+            "xiangshan_l3_spec2006_summary": details.get("xiangshan_l3_spec2006", {}).get("summary"),
+            "spec2006_canary_timing": spec2006_canary_timing(details),
             "xiangshan_l3_status": xiangshan_l3.get("status"),
             "xiangshan_l3_reason": xiangshan_l3.get("reason"),
             "xiangshan_l3_summary": xiangshan_l3.get("summary"),

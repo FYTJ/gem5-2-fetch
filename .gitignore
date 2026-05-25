@@ -5,5 +5,7 @@ XiangShan-doc/
 m5out/
 build/validation/
 build/external/
+.cache/spec2006-ckpts/
+.cache/spec2006-logs/
 __pycache__/
 *.pyc
