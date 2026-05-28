@@ -107,6 +107,8 @@ def build_gates(root: Path, manifest: dict, linux_root: Path, eda_root: Path) ->
     total = manifest.get("summary", {}).get("total", 0)
     gem5_bin = "GEM5/build/RISCV/gem5.opt"
     l3_isa_cmd = f"tools/validation/run-l3-gem5 --stage isa --manifest {shlex.quote(manifest_path)} --output build/validation/l3-gem5/isa/results.json"
+    spec2006_manifest = "build/validation/spec2006-checkpoints/manifest.json"
+    xs_spec2006_diff = "XiangShan/ready-to-run/riscv64-nemu-interpreter-so"
     return [
         Gate(
             layer="l1",
@@ -219,13 +221,33 @@ def build_gates(root: Path, manifest: dict, linux_root: Path, eda_root: Path) ->
         ),
         Gate(
             layer="l3",
-            target="spec2006-checkpoint",
-            workload="SPEC2006 checkpoint manifest",
-            host="linux/eda-00",
-            cwd=linux_root_s,
-            command="tools/validation/run-l3 --stage spec2006 --checkpoint-manifest <provided-by-user>",
+            target="xiangshan-spec2006-checkpoint",
+            workload="SPEC2006 checkpoint bounded canary",
+            host="eda-00",
+            cwd=eda_root_s,
+            command=(
+                "tools/validation/run-l3-xiangshan --stage spec2006 --spec2006-canary "
+                f"--manifest {shlex.quote(spec2006_manifest)} --diff {shlex.quote(xs_spec2006_diff)} "
+                "--output build/validation/l3-xiangshan/spec2006/results.json"
+            ),
+            timeout=7200,
+            requires_artifact=spec2006_manifest,
+        ),
+        Gate(
+            layer="l3",
+            target="xiangshan-spec2006-full-difftest",
+            workload="SPEC2006 checkpoint-end run with difftest",
+            host="eda-00",
+            cwd=eda_root_s,
+            command=(
+                "tools/validation/run-l3-xiangshan --stage spec2006 --spec2006-canary "
+                "--spec2006-run-mode complete "
+                f"--manifest {shlex.quote(spec2006_manifest)} --diff {shlex.quote(xs_spec2006_diff)} "
+                "--per-test-timeout 28800 "
+                "--output build/validation/l3-xiangshan/spec2006-full-difftest/results.json"
+            ),
             timeout=28800,
-            requires_artifact="SPEC2006 checkpoint manifest",
+            requires_artifact=spec2006_manifest,
         ),
     ]
 
@@ -234,7 +256,7 @@ def selected_gates(gates: list[Gate], layer: str, target: str) -> list[Gate]:
     if layer != "all":
         gates = [gate for gate in gates if gate.layer == layer]
     if target != "all":
-        gates = [gate for gate in gates if gate.target == target or gate.target.startswith(target)]
+        gates = [gate for gate in gates if gate.target == target or gate.target.startswith(target) or target in gate.target]
     return gates
 
 

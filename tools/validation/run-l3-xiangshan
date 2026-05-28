@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -14,8 +17,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from rv64_supported_suite import SUPPORTED_SUITE_ID, build_supported_suite
+from spec2006_gcpt_layout import detect_gcpt_layout
 
-STATUS_ENUM = ("pass", "fail", "timeout", "unsupported", "blocked_missing_artifact", "blocked_env")
+STATUS_ENUM = ("pass", "fail", "timeout", "oom", "unsupported", "blocked_missing_artifact", "blocked_env")
+SPEC2006_DEFAULT_CHECKPOINT_END_MAXINSTS = 40 * 10**6
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+ABORT_PC_RE = re.compile(r"ABORT at pc = 0x([0-9a-fA-F]+)")
+CORE_STATS_RE = re.compile(
+    r"Core-(?P<core>\d+)\s+instrCnt = (?P<instr>[\d,']+), cycleCnt = (?P<cycle>[\d,']+), IPC = (?P<ipc>[0-9.]+)"
+)
+GUEST_CYCLE_RE = re.compile(r"Guest cycle spent: (?P<cycles>[\d,']+)")
+HOST_TIME_RE = re.compile(r"Host time spent: (?P<ms>[\d,']+)ms")
+
+
+def parse_counter(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        return int(raw.replace(",", "").replace("'", ""))
+    except ValueError:
+        return None
+
+
+def line_buffered_command(command: list[str]) -> list[str]:
+    stdbuf = shutil.which("stdbuf")
+    if not stdbuf:
+        return command
+    return [stdbuf, "-oL", "-eL", *command]
 
 
 def repo_root() -> Path:
@@ -36,6 +64,16 @@ def resolve_repo_path(root: Path, path: Path | None) -> Path | None:
     if path.is_absolute():
         return path
     return root / path
+
+
+def xiangshan_subprocess_env(root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    xs_home = root / "XiangShan"
+    ready_to_run = xs_home / "ready-to-run"
+    env.setdefault("NOOP_HOME", str(xs_home))
+    env.setdefault("NEMU_HOME", str(ready_to_run))
+    env.setdefault("AM_HOME", str(ready_to_run))
+    return env
 
 
 def test_matches(test: dict, filters: set[str]) -> bool:
@@ -80,15 +118,66 @@ def artifact_for_backend(root: Path, test: dict, backend: str) -> Path:
     return path
 
 
+def xiangshan_log_summary(log_path: Path) -> dict:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    plain_text = ANSI_RE.sub("", text)
+    summary: dict[str, object] = {
+        "abort_pc": None,
+        "instrCnt": None,
+        "cycleCnt": None,
+        "IPC": None,
+        "guest_cycle_spent": None,
+        "host_time_spent_ms": None,
+        "critical_error_marker": None,
+        "commit_stuck_marker": None,
+        "limit_marker": None,
+    }
+    for line in plain_text.splitlines():
+        lowered = line.lower()
+        if summary["critical_error_marker"] is None and "critical_error diff ref" in lowered:
+            summary["critical_error_marker"] = line.strip()
+        if summary["commit_stuck_marker"] is None and "no instruction of core" in lowered and "commits for" in lowered:
+            summary["commit_stuck_marker"] = line.strip()
+        if summary["limit_marker"] is None and "exceeding cycle/instr limit" in lowered:
+            summary["limit_marker"] = line.strip()
+        if summary["abort_pc"] is None:
+            match = ABORT_PC_RE.search(line)
+            if match:
+                summary["abort_pc"] = f"0x{match.group(1).lower()}"
+        stats = CORE_STATS_RE.search(line)
+        if stats:
+            summary["instrCnt"] = parse_counter(stats.group("instr"))
+            summary["cycleCnt"] = parse_counter(stats.group("cycle"))
+            summary["IPC"] = float(stats.group("ipc"))
+        guest = GUEST_CYCLE_RE.search(line)
+        if guest:
+            summary["guest_cycle_spent"] = parse_counter(guest.group("cycles"))
+        host = HOST_TIME_RE.search(line)
+        if host:
+            summary["host_time_spent_ms"] = parse_counter(host.group("ms"))
+    return summary
+
+
 def classify_log(log_path: Path, rc: int | None, timed_out: bool) -> tuple[str, str]:
     text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    if "HIT GOOD TRAP" in text:
-        return "pass", "HIT GOOD TRAP"
-    if "HIT BAD TRAP" in text:
+    plain_text = ANSI_RE.sub("", text)
+    log_summary = xiangshan_log_summary(log_path)
+    if "HIT BAD TRAP" in plain_text:
         return "fail", "HIT BAD TRAP"
-    lowered = text.lower()
-    if "difftest" in lowered and any(term in lowered for term in ("fail", "mismatch", "abort")):
-        return "fail", "difftest failure marker"
+    if log_summary["critical_error_marker"] is not None:
+        return "fail", "xiangshan critical error differs from reference"
+    if log_summary["commit_stuck_marker"] is not None:
+        return "fail", "xiangshan commit stuck"
+    if log_summary["abort_pc"] is not None or "Core 0: ABORT" in plain_text or "Core-0: ABORT" in plain_text:
+        return "fail", "xiangshan core abort"
+    lowered = plain_text.lower()
+    for line in lowered.splitlines():
+        if "difftest" in line and any(term in line for term in ("fail", "mismatch", "abort", "panic")):
+            return "fail", "difftest failure marker"
+    if "HIT GOOD TRAP" in plain_text:
+        return "pass", "HIT GOOD TRAP"
+    if "EXCEEDING CYCLE/INSTR LIMIT" in plain_text:
+        return "unsupported", "max instruction limit reached"
     if timed_out:
         return "timeout", "xiangshan emu timed out"
     if rc != 0:
@@ -149,8 +238,74 @@ def select_spec2006_entries(manifest: dict, filters: set[str], canary: bool) -> 
     return selected
 
 
-def resolve_gcpt_restorer(root: Path, entry: dict, requested: str | None) -> tuple[Path | None, str, str | None]:
-    if requested is None or requested == "auto":
+def effective_gcpt_layout(entry: dict, detected: dict) -> str:
+    detected_layout = str(detected.get("layout") or "unknown")
+    if detected_layout != "unknown":
+        return detected_layout
+    return str(entry.get("gcpt_layout") or "unknown")
+
+
+def requires_rvh_checkpoint(entry: dict, layout: str) -> bool:
+    return layout == "embedded-rvh" or bool(entry.get("requires_rvh"))
+
+
+def requires_h_aware_ref(entry: dict, layout: str) -> bool:
+    return layout == "embedded-rvh" or bool(entry.get("requires_h_aware_ref"))
+
+
+def checkpoint_integrity_error(entry: dict, checkpoint: Path) -> str | None:
+    expected_bytes = entry.get("compressed_bytes")
+    if expected_bytes is None:
+        return None
+    try:
+        expected = int(expected_bytes)
+    except (TypeError, ValueError):
+        return f"invalid checkpoint compressed_bytes metadata: {expected_bytes!r}"
+    actual = checkpoint.stat().st_size
+    if actual != expected:
+        return f"checkpoint compressed size mismatch: expected {expected} bytes, found {actual} bytes"
+    return None
+
+
+def default_difftest_ref_so(root: Path, requires_h_aware: bool = False) -> Path:
+    if requires_h_aware and os.environ.get("GCBH_REF_SO"):
+        return Path(os.environ["GCBH_REF_SO"])
+    return root / "XiangShan" / "ready-to-run" / "riscv64-nemu-interpreter-so"
+
+
+def resolve_difftest_ref_so(root: Path, requested: Path | None, requires_h_aware: bool = False) -> Path:
+    return resolve_repo_path(root, requested) or default_difftest_ref_so(root, requires_h_aware)
+
+
+def default_gcpt_restorer_candidates(root: Path) -> list[Path]:
+    return [
+        root / "NEMU" / "resource" / "gcpt_restore" / "build" / "gcpt.bin",
+        root / "XiangShan" / "NEMU" / "resource" / "gcpt_restore" / "build" / "gcpt.bin",
+    ]
+
+
+def normalize_gcpt_restorer_path(root: Path, raw: str) -> tuple[Path | None, str | None]:
+    path = resolve_repo_path(root, Path(raw))
+    if path is None:
+        return None, "gcpt restorer path was not resolved"
+    if path.is_dir():
+        path = path / "build" / "gcpt.bin"
+    if not path.exists():
+        return path, "missing gcpt restorer"
+    return path, None
+
+
+def resolve_gcpt_restorer(root: Path, entry: dict, requested: str | None, layout: str) -> tuple[Path | None, str, str | None]:
+    requested = requested or "auto"
+    if layout == "embedded-rvh":
+        if requested in {"auto", "none"}:
+            return None, "none", None
+        return (
+            None,
+            requested,
+            "checkpoint is embedded RVH/new-layout GCPT; use --gcpt-restorer none to avoid overwriting its embedded restorer",
+        )
+    if requested == "auto":
         manifest_value = entry.get("gcpt_restorer")
         if manifest_value and manifest_value not in {"auto", "unknown", "none"}:
             requested = str(manifest_value)
@@ -159,15 +314,66 @@ def resolve_gcpt_restorer(root: Path, entry: dict, requested: str | None) -> tup
             if env_value:
                 requested = env_value
             else:
-                return None, "auto", None
+                for candidate in default_gcpt_restorer_candidates(root):
+                    if candidate.exists():
+                        return candidate, "auto", None
+                return None, "auto", "missing gcpt restorer; set GCB_RESTORER, pass --gcpt-restorer <path>, or build NEMU/resource/gcpt_restore/build/gcpt.bin"
     if requested == "none":
         return None, "none", None
-    path = resolve_repo_path(root, Path(requested))
-    if path is None:
-        return None, requested, "gcpt restorer path was not resolved"
-    if not path.exists():
-        return path, requested, "missing gcpt restorer"
-    return path, requested, None
+    path, error = normalize_gcpt_restorer_path(root, requested)
+    return path, requested, error
+
+
+def spec2006_target(run_mode: str, maxcycles: int | None = None) -> str:
+    if maxcycles is not None and maxcycles > 0:
+        return "xiangshan-spec2006-cycle-debug"
+    if run_mode == "complete":
+        return "xiangshan-spec2006-full-difftest"
+    return "xiangshan-spec2006-checkpoint"
+
+
+def xiangshan_gcpt_log_evidence(log_path: Path) -> dict:
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    checkpoint_line = None
+    restorer_line = None
+    maxinsts_line = None
+    for line in text.splitlines():
+        lowered = line.lower()
+        if checkpoint_line is None and any(token in lowered for token in ("checkpoint", ".zstd", "restore", "load image", "load memory")):
+            checkpoint_line = line.strip()
+        if restorer_line is None and "restorer" in lowered:
+            restorer_line = line.strip()
+        if maxinsts_line is None and any(token in lowered for token in ("max instruction", "maxinst", "max instr", "max commit", "simulation reaches", "exceeding cycle/instr limit")):
+            maxinsts_line = line.strip()
+    return {
+        "checkpoint_marker": checkpoint_line,
+        "restorer_marker": restorer_line,
+        "maxinsts_marker": maxinsts_line,
+        "entered_checkpoint": checkpoint_line is not None,
+        "reached_maxinsts": maxinsts_line is not None,
+    }
+
+
+def terminate_process_group(process: subprocess.Popen, log) -> bool:
+    killed = False
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        killed = True
+        log.write("\nSent SIGTERM to XiangShan emu process group\n")
+    except ProcessLookupError:
+        return killed
+    try:
+        process.wait(timeout=5)
+        return killed
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            killed = True
+            log.write("Sent SIGKILL to XiangShan emu process group\n")
+        except ProcessLookupError:
+            return killed
+        process.wait(timeout=5)
+        return killed
 
 
 def write_payload(output: Path, payload: dict) -> None:
@@ -218,12 +424,20 @@ def run_one(root: Path, test: dict, output_dir: Path, timeout: int, emu: Path, r
         }
     log_path = output_dir / "logs" / f"{test_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [str(emu), "-b", "0", "-e", "0", "-i", str(bin_path), "--diff", str(ref)]
+    command = line_buffered_command([str(emu), "-b", "0", "-e", "0", "-i", str(bin_path), "--diff", str(ref)])
     start = time.monotonic()
     with log_path.open("w", encoding="utf-8") as log:
         log.write("$ " + " ".join(command) + "\n\n")
         try:
-            completed = subprocess.run(command, cwd=root / "XiangShan", stdout=log, stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            completed = subprocess.run(
+                command,
+                cwd=root / "XiangShan",
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+                env=xiangshan_subprocess_env(root),
+            )
             rc = completed.returncode
             timed_out = False
         except subprocess.TimeoutExpired:
@@ -256,16 +470,35 @@ def run_spec2006_one(
     ref: Path,
     gcpt_restorer: str | None,
     maxinsts: int | None,
+    maxcycles: int | None,
+    run_mode: str,
+    checkpoint_end_maxinsts: int,
     dry_run: bool,
     on_eda: bool,
 ) -> dict:
     entry_id = entry["id"]
     checkpoint = resolve_repo_path(root, Path(entry["checkpoint"]))
-    restorer, restorer_policy, restorer_error = resolve_gcpt_restorer(root, entry, gcpt_restorer)
-    maxinsts_value = maxinsts or int(entry.get("maxinsts") or 10000)
+    detected_layout = detect_gcpt_layout(checkpoint) if checkpoint and checkpoint.exists() else {"layout": "unknown"}
+    gcpt_layout = effective_gcpt_layout(entry, detected_layout)
+    rvh_checkpoint = requires_rvh_checkpoint(entry, gcpt_layout)
+    h_aware_ref_required = requires_h_aware_ref(entry, gcpt_layout)
+    requested_ref = ref
+    ref = resolve_difftest_ref_so(root, requested_ref, h_aware_ref_required)
+    restorer, restorer_policy, restorer_error = resolve_gcpt_restorer(root, entry, gcpt_restorer, gcpt_layout)
+    if run_mode == "complete":
+        maxinsts_value = maxinsts if maxinsts and maxinsts > 0 else int(entry.get("checkpoint_end_maxinsts") or checkpoint_end_maxinsts)
+        maxinsts_policy = "checkpoint_end"
+        completion_policy = "checkpoint_end_maxinsts"
+    else:
+        maxinsts_value = maxinsts or int(entry.get("maxinsts") or 10000)
+        maxinsts_policy = "bounded_canary"
+        completion_policy = "bounded_canary_after_checkpoint_entry"
+    maxcycles_value = maxcycles if maxcycles and maxcycles > 0 else None
     timeout_seconds = timeout or int(entry.get("timeout_seconds") or 300)
     log_path = output_dir / "logs" / f"{entry_id}.log"
-    command = [str(emu), "-i", str(checkpoint), "--diff", str(ref), "-I", str(maxinsts_value)]
+    command = line_buffered_command([str(emu), "-i", str(checkpoint), "--diff", str(ref), "-I", str(maxinsts_value)])
+    if maxcycles_value is not None:
+        command.extend(["-C", str(maxcycles_value)])
     if restorer is not None:
         command.extend(["-r", str(restorer)])
     base = {
@@ -281,7 +514,16 @@ def run_spec2006_one(
         "ref": str(ref),
         "gcpt_restorer": str(restorer) if restorer else None,
         "gcpt_restorer_policy": restorer_policy,
+        "gcpt_layout": gcpt_layout,
+        "gcpt_layout_evidence": detected_layout,
+        "requires_rvh": rvh_checkpoint,
+        "requires_h_aware_ref": h_aware_ref_required,
         "maxinsts": maxinsts_value,
+        "maxinsts_policy": maxinsts_policy,
+        "maxcycles": maxcycles_value,
+        "maxcycles_policy": "debug_cycle_limit" if maxcycles_value is not None else None,
+        "run_mode": run_mode,
+        "completion_policy": completion_policy,
         "timeout_seconds": timeout_seconds,
         "command": command,
         "log_path": str(log_path),
@@ -296,8 +538,17 @@ def run_spec2006_one(
     }
     if checkpoint is None or not checkpoint.exists():
         return {**base, "status": "blocked_missing_artifact", "reason": "missing SPEC2006 checkpoint"}
+    integrity_error = checkpoint_integrity_error(entry, checkpoint)
+    if integrity_error:
+        return {**base, "status": "blocked_missing_artifact", "reason": integrity_error}
     if not ref.exists():
         return {**base, "status": "blocked_missing_artifact", "reason": "missing XiangShan difftest reference"}
+    if h_aware_ref_required and requested_ref is None and not os.environ.get("GCBH_REF_SO"):
+        return {
+            **base,
+            "status": "blocked_missing_artifact",
+            "reason": "embedded RVH checkpoint requires an explicit H-aware XiangShan difftest ref; pass --diff or set GCBH_REF_SO",
+        }
     if restorer_error:
         return {**base, "status": "blocked_missing_artifact", "reason": restorer_error}
     if dry_run:
@@ -311,21 +562,62 @@ def run_spec2006_one(
     start = time.monotonic()
     rc = None
     timed_out = False
+    killed = False
     with log_path.open("w", encoding="utf-8") as log:
         log.write("$ " + " ".join(command) + "\n\n")
         try:
-            completed = subprocess.run(command, cwd=root / "XiangShan", stdout=log, stderr=subprocess.STDOUT, timeout=timeout_seconds, check=False)
-            rc = completed.returncode
+            process = subprocess.Popen(
+                command,
+                cwd=root / "XiangShan",
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=xiangshan_subprocess_env(root),
+            )
+            rc = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             log.write(f"\nTIMEOUT after {timeout_seconds}s\n")
             timed_out = True
+            killed = terminate_process_group(process, log)
     ended_at = iso_now()
     wall_time = round(time.monotonic() - start, 3)
     status, reason = classify_log(log_path, rc, timed_out)
-    evidence = difftest_log_evidence(log_path)
-    if timed_out and evidence["checkpoint_marker"]:
-        reason = "entered checkpoint emu and reached bounded timeout"
-    if status in {"pass", "timeout", "unsupported"} and not evidence["enabled"]:
+    difftest_evidence = difftest_log_evidence(log_path)
+    gcpt_evidence = xiangshan_gcpt_log_evidence(log_path)
+    log_summary = xiangshan_log_summary(log_path)
+    if timed_out and status == "timeout":
+        if gcpt_evidence["entered_checkpoint"] and run_mode == "bounded":
+            status = "pass"
+            reason = "entered checkpoint emu and reached bounded timeout"
+        elif gcpt_evidence["entered_checkpoint"]:
+            status = "timeout"
+            reason = "entered checkpoint emu but did not reach checkpoint-end boundary before timeout"
+        else:
+            status = "fail"
+            reason = "timed out before checkpoint emu entry"
+    if status == "unsupported" and gcpt_evidence["entered_checkpoint"] and gcpt_evidence["reached_maxinsts"]:
+        instr_count = log_summary.get("instrCnt")
+        cycle_count = log_summary.get("cycleCnt")
+        reached_instr_limit = isinstance(instr_count, int) and instr_count >= maxinsts_value
+        reached_cycle_limit = maxcycles_value is not None and isinstance(cycle_count, int) and cycle_count >= maxcycles_value
+        if maxcycles_value is not None and reached_cycle_limit and not reached_instr_limit:
+            status = "timeout"
+            reason = (
+                "cycle limit reached before checkpoint-end boundary"
+                if run_mode == "complete"
+                else "cycle limit reached before bounded instruction boundary"
+            )
+        else:
+            status = "pass"
+            reason = (
+                "checkpoint-end max instruction count reached after checkpoint entry"
+                if run_mode == "complete"
+                else "entered checkpoint emu and reached max instruction count"
+            )
+    elif run_mode == "complete" and status == "unsupported" and gcpt_evidence["entered_checkpoint"]:
+        status = "fail"
+        reason = "XiangShan emu exited after checkpoint entry without a complete-run marker"
+    if status in {"pass", "timeout", "unsupported"} and not difftest_evidence["enabled"]:
         status = "fail"
         reason = "checkpoint run did not emit difftest enable marker"
     return {
@@ -338,9 +630,15 @@ def run_spec2006_one(
         "wall_time_seconds": wall_time,
         "host_time": wall_time,
         "timed_out": timed_out,
-        "killed": timed_out,
+        "killed": killed,
         "stop_reason": reason,
-        "difftest_log_evidence": evidence,
+        "difftest_log_evidence": difftest_evidence,
+        "gcpt_log_evidence": gcpt_evidence,
+        "emu_log_summary": log_summary,
+        "abort_pc": log_summary.get("abort_pc"),
+        "instrCnt": log_summary.get("instrCnt"),
+        "cycleCnt": log_summary.get("cycleCnt"),
+        "IPC": log_summary.get("IPC"),
     }
 
 
@@ -354,7 +652,7 @@ def run_spec2006(args: argparse.Namespace, root: Path, host: str, on_eda: bool) 
         reason = "no SPEC2006 checkpoint manifest entries matched requested filters"
         return "blocked_missing_artifact", reason, []
     emu = args.emu or root / "XiangShan" / "build" / "emu"
-    ref = args.diff or root / "XiangShan" / "ready-to-run" / "riscv64-nemu-interpreter-so"
+    ref = args.diff
     rows = [
         run_spec2006_one(
             root,
@@ -365,14 +663,19 @@ def run_spec2006(args: argparse.Namespace, root: Path, host: str, on_eda: bool) 
             ref,
             args.gcpt_restorer,
             args.maxinsts,
+            args.maxcycles,
+            args.spec2006_run_mode,
+            args.spec2006_checkpoint_end_maxinsts,
             args.dry_run,
             on_eda,
         )
         for entry in entries
     ]
     summary = summarize(rows)
-    blocking = sum(summary["by_status"].get(status, 0) for status in ("fail", "blocked_missing_artifact", "blocked_env"))
-    if args.dry_run and blocking:
+    hard_statuses = ("fail", "blocked_missing_artifact", "blocked_env", "timeout", "oom") if args.spec2006_run_mode == "complete" else ("fail", "blocked_missing_artifact", "blocked_env", "oom")
+    hard_blocking = sum(summary["by_status"].get(status, 0) for status in hard_statuses)
+    blocking = hard_blocking + (0 if args.dry_run else summary["by_status"].get("unsupported", 0))
+    if args.dry_run and hard_blocking:
         if summary["by_status"].get("blocked_missing_artifact", 0):
             return "blocked_missing_artifact", "dry-run input validation found missing artifacts", rows
         if summary["by_status"].get("blocked_env", 0):
@@ -385,8 +688,14 @@ def run_spec2006(args: argparse.Namespace, root: Path, host: str, on_eda: bool) 
             return "blocked_missing_artifact", "selected XiangShan SPEC2006 checkpoint entries are blocked by missing artifacts", rows
         if summary["by_status"].get("blocked_env", 0) and not summary["by_status"].get("fail", 0) and not summary["by_status"].get("blocked_missing_artifact", 0):
             return "blocked_env", "selected XiangShan SPEC2006 checkpoint entries are blocked by execution environment", rows
+        if args.spec2006_run_mode == "complete":
+            return "fail", "selected XiangShan SPEC2006 checkpoint entries did not satisfy checkpoint-end criteria", rows
         return "fail", "selected XiangShan SPEC2006 checkpoint entries did not satisfy canary criteria", rows
-    return "pass", "all selected XiangShan SPEC2006 checkpoint entries reached bounded canary criteria", rows
+    return "pass", (
+        "all selected XiangShan SPEC2006 checkpoint entries reached checkpoint-end criteria"
+        if args.spec2006_run_mode == "complete"
+        else "all selected XiangShan SPEC2006 checkpoint entries reached bounded canary criteria"
+    ), rows
 
 
 def main(argv: list[str]) -> int:
@@ -394,7 +703,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("isa", "medium", "spec2006"), required=True)
     parser.add_argument("--manifest", type=Path, default=root / "baremetal" / "riscv-tests" / "isa" / "build" / "manifest.json")
-    parser.add_argument("--output", type=Path, default=root / "build" / "validation" / "l3-xiangshan" / "results.json")
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--test", action="append", default=[], help="test filter: name, suite/name, or manifest id")
     parser.add_argument("--suite", choices=(SUPPORTED_SUITE_ID,), default=None, help="shared test suite to select before --test filtering")
@@ -411,8 +720,20 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--spec2006-canary", action="store_true", help="select the manifest canary entry for --stage spec2006")
     parser.add_argument("--gcpt-restorer", default="auto", help="GCPT restorer policy for SPEC2006: auto, none, or a path")
     parser.add_argument("--maxinsts", type=int, default=None, help="bounded instruction limit for SPEC2006 checkpoint canaries")
+    parser.add_argument("--maxcycles", "--max-cycles", type=int, default=None, help="optional SPEC2006 emu cycle limit passed through as -C")
+    parser.add_argument("--spec2006-run-mode", choices=("bounded", "complete"), default="bounded", help="bounded keeps canary maxinsts semantics; complete runs until the checkpoint-end instruction boundary")
+    parser.add_argument("--spec2006-checkpoint-end-maxinsts", type=int, default=SPEC2006_DEFAULT_CHECKPOINT_END_MAXINSTS, help="complete-mode instruction boundary that marks the end of the checkpoint sample")
     args = parser.parse_args(argv)
     root = args.repo_root.resolve()
+    if args.output is None:
+        if args.stage == "spec2006" and args.maxcycles is not None and args.maxcycles > 0:
+            args.output = root / "build" / "validation" / "l3-xiangshan" / "spec2006-cycle-debug" / "results.json"
+        elif args.stage == "spec2006" and args.spec2006_run_mode == "complete":
+            args.output = root / "build" / "validation" / "l3-xiangshan" / "spec2006-full-difftest" / "results.json"
+        elif args.stage == "spec2006":
+            args.output = root / "build" / "validation" / "l3-xiangshan" / "spec2006" / "results.json"
+        else:
+            args.output = root / "build" / "validation" / "l3-xiangshan" / args.stage / "results.json"
     host = socket.gethostname()
     on_eda = host == "eda-00" or "eda-00" in host
     tests: list[dict] = []
@@ -458,8 +779,9 @@ def main(argv: list[str]) -> int:
     payload = {
         "schema_version": 1,
         "layer": "l3",
-        "target": "xiangshan-spec2006-checkpoint" if args.stage == "spec2006" else "xiangshan-emu",
+        "target": spec2006_target(args.spec2006_run_mode, args.maxcycles) if args.stage == "spec2006" else "xiangshan-emu",
         "stage": args.stage,
+        "run_mode": args.spec2006_run_mode if args.stage == "spec2006" else None,
         "host": host,
         "suite": args.suite,
         "suite_source": str(args.suite_source) if args.suite else None,

@@ -57,6 +57,9 @@ DETAIL_RESULT_PATHS = {
     "gem5_l3_spec2006_full_difftest": "build/validation/l3-gem5/spec2006-full-difftest/results.json",
     "xiangshan_l3_isa": "build/validation/l3-xiangshan/isa/results.json",
     "xiangshan_l3_spec2006": "build/validation/l3-xiangshan/spec2006/results.json",
+    "xiangshan_l3_spec2006_full_difftest": "build/validation/l3-xiangshan/spec2006-full-difftest/results.json",
+    "xiangshan_l3_spec2006_full_difftest_long": "build/validation/l3-xiangshan/spec2006-full-difftest-long/results.json",
+    "xiangshan_l3_spec2006_cycle_debug": "build/validation/l3-xiangshan/spec2006-cycle-debug/results.json",
     "xiangshan_l3_eda00_smoke": "build/validation/l3-xiangshan/eda00-smoke/results.json",
     "xiangshan_l3_local_blocker": "build/validation/l3-xiangshan/local-guard/results.json",
 }
@@ -146,6 +149,21 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
         ("gem5_l3_spec2006_full_difftest", "l3", "gem5-spec2006-full-difftest", "linux-aarch64", "SPEC2006 checkpoint complete run with difftest"),
         ("gem5_l3_spec2006_full", "l3", "gem5-spec2006-full-checkpoint", "linux", "SPEC2006 checkpoint complete run"),
         ("xiangshan_l3_spec2006", "l3", "xiangshan-spec2006-checkpoint", "eda-00", "SPEC2006 checkpoint manifest"),
+        ("xiangshan_l3_spec2006_full_difftest", "l3", "xiangshan-spec2006-full-difftest", "eda-00", "SPEC2006 checkpoint-end run with difftest"),
+        (
+            "xiangshan_l3_spec2006_full_difftest_long",
+            "l3",
+            "xiangshan-spec2006-full-difftest-long",
+            "eda-00",
+            "SPEC2006 checkpoint-end long run with difftest",
+        ),
+        (
+            "xiangshan_l3_spec2006_cycle_debug",
+            "l3",
+            "xiangshan-spec2006-cycle-debug",
+            "eda-00",
+            "SPEC2006 checkpoint cycle-limited debug run with difftest",
+        ),
         ("xiangshan_l3", "l3", "xiangshan-emu-isa", "eda-00", "supported-cross-77 RV64 suite"),
     )
     rows = []
@@ -190,10 +208,10 @@ def detail_gate_rows(details: dict[str, Any], existing_targets: set[str]) -> lis
                 "exit_reason": payload.get("reason"),
                 "log_path": detail_row.get("log_path") or payload.get("path"),
                 "stats_path": detail_row.get("stats_path"),
-                "simInsts": None,
-                "instrCnt": None,
-                "cycles": None,
-                "IPC": None,
+                "simInsts": detail_row.get("simInsts"),
+                "instrCnt": detail_row.get("instrCnt"),
+                "cycles": detail_row.get("cycles") or detail_row.get("cycleCnt"),
+                "IPC": detail_row.get("IPC"),
                 "host_time": detail_row.get("host_time") or detail_row.get("wall_time_seconds"),
             }
         )
@@ -274,6 +292,12 @@ def detail_status_for(row: dict[str, Any], details: dict[str, Any]) -> str | Non
         return details.get("gem5_l3_spec2006_full", {}).get("status")
     if target == "xiangshan-spec2006-checkpoint":
         return details.get("xiangshan_l3_spec2006", {}).get("status")
+    if target == "xiangshan-spec2006-full-difftest":
+        return details.get("xiangshan_l3_spec2006_full_difftest", {}).get("status")
+    if target == "xiangshan-spec2006-full-difftest-long":
+        return details.get("xiangshan_l3_spec2006_full_difftest_long", {}).get("status")
+    if target == "xiangshan-spec2006-cycle-debug":
+        return details.get("xiangshan_l3_spec2006_cycle_debug", {}).get("status")
     if target == "xiangshan-emu-isa":
         return xiangshan_l3_detail(details).get("status")
     return None
@@ -330,6 +354,9 @@ def spec2006_canary_timing(details: dict[str, Any]) -> list[dict[str, Any]]:
         ("gem5_l3_spec2006_full_difftest", "gem5-spec2006-full-difftest"),
         ("gem5_l3_spec2006_full", "gem5-spec2006-full-checkpoint"),
         ("xiangshan_l3_spec2006", "xiangshan-spec2006-checkpoint"),
+        ("xiangshan_l3_spec2006_full_difftest", "xiangshan-spec2006-full-difftest"),
+        ("xiangshan_l3_spec2006_full_difftest_long", "xiangshan-spec2006-full-difftest-long"),
+        ("xiangshan_l3_spec2006_cycle_debug", "xiangshan-spec2006-cycle-debug"),
     ):
         payload = details.get(key, {})
         row = first_result(payload)
@@ -344,6 +371,12 @@ def spec2006_canary_timing(details: dict[str, Any]) -> list[dict[str, Any]]:
                 "ended_at": row.get("ended_at"),
                 "wall_time_seconds": row.get("wall_time_seconds"),
                 "timeout_seconds": row.get("timeout_seconds"),
+                "maxinsts": row.get("maxinsts"),
+                "maxcycles": row.get("maxcycles"),
+                "abort_pc": row.get("abort_pc"),
+                "instrCnt": row.get("instrCnt"),
+                "cycleCnt": row.get("cycleCnt"),
+                "IPC": row.get("IPC"),
                 "stop_reason": row.get("stop_reason") or row.get("reason"),
                 "killed": row.get("killed"),
                 "oom_detected": row.get("oom_detected"),
@@ -358,12 +391,13 @@ def spec2006_canary_timing(details: dict[str, Any]) -> list[dict[str, Any]]:
 
 def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) -> dict[str, Any]:
     metric_names = ("simInsts", "instrCnt", "cycles", "IPC")
+    required_metric_names = ("instrCnt", "cycles", "IPC")
     valid_rows = []
     debug_artifacts = []
     for row in gates:
         metrics = {name: row.get(name) for name in metric_names}
         status = row.get("effective_status", row.get("status"))
-        if status == "pass" and all(metrics[name] is not None for name in metric_names):
+        if status == "pass" and all(metrics[name] is not None for name in required_metric_names):
             valid_rows.append({"target": row.get("target"), "host": row.get("host"), **metrics, "stats_path": row.get("stats_path")})
         elif row.get("stats_path"):
             debug_artifacts.append(
@@ -400,7 +434,7 @@ def performance_summary(gates: list[dict[str, Any]], details: dict[str, Any]) ->
                 )
     invalid_reasons = []
     if not valid_rows:
-        invalid_reasons.append("no correctness-pass workload exposes simInsts/instrCnt/cycles/IPC")
+        invalid_reasons.append("no correctness-pass workload exposes instrCnt/cycles/IPC")
     return {
         "performance_valid": bool(valid_rows),
         "valid_rows": valid_rows,
@@ -468,6 +502,12 @@ def build_summary(root: Path) -> dict[str, Any]:
             "gem5_l3_spec2006_full_difftest_summary": details.get("gem5_l3_spec2006_full_difftest", {}).get("summary"),
             "xiangshan_l3_spec2006_status": details.get("xiangshan_l3_spec2006", {}).get("status"),
             "xiangshan_l3_spec2006_summary": details.get("xiangshan_l3_spec2006", {}).get("summary"),
+            "xiangshan_l3_spec2006_full_difftest_status": details.get("xiangshan_l3_spec2006_full_difftest", {}).get("status"),
+            "xiangshan_l3_spec2006_full_difftest_summary": details.get("xiangshan_l3_spec2006_full_difftest", {}).get("summary"),
+            "xiangshan_l3_spec2006_full_difftest_long_status": details.get("xiangshan_l3_spec2006_full_difftest_long", {}).get("status"),
+            "xiangshan_l3_spec2006_full_difftest_long_summary": details.get("xiangshan_l3_spec2006_full_difftest_long", {}).get("summary"),
+            "xiangshan_l3_spec2006_cycle_debug_status": details.get("xiangshan_l3_spec2006_cycle_debug", {}).get("status"),
+            "xiangshan_l3_spec2006_cycle_debug_summary": details.get("xiangshan_l3_spec2006_cycle_debug", {}).get("summary"),
             "spec2006_canary_timing": spec2006_canary_timing(details),
             "xiangshan_l3_status": xiangshan_l3.get("status"),
             "xiangshan_l3_reason": xiangshan_l3.get("reason"),
