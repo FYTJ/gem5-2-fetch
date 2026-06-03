@@ -512,6 +512,62 @@ ssh -tt linux 'bash -ic '\''hostname; uname -m; cd /mnt/hgfs/zhuyanbo/Desktop/FY
 
 如果连接失败，需要记录 SSH 的准确错误，不要把测试写成已通过。
 
+## macstudio 服务器配置
+
+以下信息从 `paper-RAG/CLAUDE.md` 的 macstudio 服务器配置整合而来，并按当前仓 `module-deletion-test` 的任务边界适配。除非用户明确要求使用 macstudio，否则当前仓仍默认使用 `linux`；涉及 XiangShan Chisel/RTL 的真实编译、仿真和 difftest 仍按上文进入 q2 `eda-00`。
+
+### 连接与身份
+
+- 连接方式优先使用 `ssh macstudio`，等价于 `ssh macstudio@100.93.120.17`。本机 SSH 配置使用与 `linux` 相同的 `~/.ssh/id_ed25519` 免密登录配置。
+- 批量任务启动前必须先用非交互方式验证连接：
+
+```bash
+ssh -o BatchMode=yes macstudio 'echo ok'
+```
+
+- 不能依赖密码交互作为批处理前置条件；如果免密登录失败，应记录准确 SSH 错误并停止，不要把远端任务写成已启动。
+
+### 数据根与目录边界
+
+- macstudio 的数据根目录固定为 `/Volumes/disk/ZhuYanbo`。所有数据文件、运行产物、中间目录、日志和可重建缓存都必须放在该目录下。
+- 不要把项目数据写入 macstudio 远端 home、`/tmp` 或系统缓存目录。远端 home 只可作为用户级工具和 SSH 配置位置，例如 `~/.local/bin`、`~/.ssh/`。
+- `paper-RAG` 的固定 checkout `/Volumes/disk/ZhuYanbo/paper-RAG/repo/` 属于源仓专属路径，不能作为当前仓默认工作目录。当前仓如果需要在 macstudio 上运行或暂存，先在 `/Volumes/disk/ZhuYanbo/module-deletion-test/` 下建立明确任务目录或 checkout，并在日志中记录实际路径。
+- 每个额外任务建立独立子目录，例如 `/Volumes/disk/ZhuYanbo/module-deletion-test/<task-name>/`，并在其中继续区分 `input/`、`output/`、`logs/`、`cache/` 等子目录：
+
+```bash
+ssh macstudio 'mkdir -p /Volumes/disk/ZhuYanbo/module-deletion-test/<task-name>/{input,output,logs,cache}'
+```
+
+- 从本机同步输入或取回结果时，rsync 目标也必须落在该数据根下：
+
+```bash
+rsync -av <local-input>/ macstudio:/Volumes/disk/ZhuYanbo/module-deletion-test/<task-name>/input/
+rsync -av macstudio:/Volumes/disk/ZhuYanbo/module-deletion-test/<task-name>/output/ <local-output>/
+```
+
+### 用户态工具链
+
+- macstudio 已配置用户态工具链：`~/.local/bin` 和 `/opt/homebrew/bin` 在非交互 SSH 中应优先进入 `PATH`；`uv`、Homebrew `rsync`、`oathtool`、系统 `expect` 和 `/Applications/Google Chrome.app` 已可用。
+- 如果后续在 macstudio 上重建当前仓或子项目环境，先确认实际 checkout、`pyproject.toml` 和任务入口，再在对应目录运行 `uv sync`；不要照搬 `paper-RAG` 的 `acm/`、`ieee/` 环境命令。
+
+### macstudio 到 q2 的 helper
+
+- macstudio 到 q2/qimeng2 的 helper 命令必须放在 `~/.local/bin`，不是临时脚本：`ssh-qimeng2-open`、`ssh-qimeng2-fast`、`ssh-qimeng2-close`。
+- 这些 helper 读取 `~/.ssh/qimeng_password` 和 `~/.ssh/totp_secret`，并使用 `~/.ssh/cm-qimeng2.sock` 作为 ControlMaster socket。
+- 在 macstudio 上启动任何需要 q2 链路的同步、收尾或远端作业前，必须先验证 q2 链路、TOTP 和 ControlMaster：
+
+```bash
+ssh-qimeng2-fast 'echo ok'
+```
+
+- q2 登录节点仍只允许连接、同步和轻量检查；真实构建、仿真、测试或长任务必须进入 `eda-00` 等运行节点，并遵守下文 q2 / eda-00 规则。
+
+### macstudio 使用边界
+
+- 不把真实 `.env`、storage state、cookie、SQLite taskdb、浏览器 profile、明文密码、下载产物、日志、缓存或运行态文件提交到主仓。
+- 不修改 macstudio 系统目录、全局 shell profile、系统包管理配置或其他用户文件，除非用户明确要求。
+- `paper-RAG` 的下载 wrapper、ACM/IEEE remote finalize、MinerU 提交和 catalog 规则是源仓专属流程。当前仓只有在相关脚本被显式迁入、任务目标确实需要、且用户明确允许时，才可参考这些命令。
+
 ## qimeng2 / RockyOS / eda-00 服务器配置
 
 以下信息从 `paper-RAG/CLAUDE.md` 的服务器配置整合而来，并按当前仓 `module-deletion-test` 的路径和任务边界适配。除非用户明确要求使用这些服务器，否则当前仓仍默认使用上一节的 `linux` 远程主机。
