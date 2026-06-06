@@ -105,7 +105,9 @@ main(void) {
 #else
 MAIN_RETURN_TYPE
 main(int argc, char *argv[]) {
+#if !defined(COREMARK_SILENT) || !COREMARK_SILENT
   uart_init();
+#endif
 #endif
   ee_u16 i, j = 0, num_algorithms = 0;
   ee_s16 known_id = -1, total_errors = 0;

@@ -438,12 +438,16 @@ typedef enum { Ident_1, Ident_2, Ident_3, Ident_4, Ident_5 } Enumeration;
 
 /* General definitions: */
 
-#include "xprintf.h"
 #include <ctype.h>
 #include <string.h>
 /* for strcpy, strcmp */
 
+#if defined(DHRYSTONE_SILENT) && DHRYSTONE_SILENT
+#define printf(...) ((void)0)
+#else
+#include "xprintf.h"
 #define printf xprintf
+#endif
 #define Null 0
 /* Value of a Null pointer */
 #define true 1

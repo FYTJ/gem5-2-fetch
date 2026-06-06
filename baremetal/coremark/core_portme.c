@@ -18,8 +18,6 @@ Original Author: Shay Gal-on
 
 #include "coremark.h"
 #include "xprintf.h"
-#include <stdio.h>
-#include <stdlib.h>
 
 #if VALIDATION_RUN
 volatile ee_s32 seed1_volatile = 0x3415;
@@ -52,9 +50,15 @@ volatile ee_s32 seed5_volatile = 0;
    does not occur. If there are issues with the return value overflowing,
    increase this value.
         */
+#if HAS_TIME_H
 #define NSECS_PER_SEC CLOCKS_PER_SEC
 #define CORETIMETYPE clock_t
 #define GETMYTIME(_t) (*_t = clock())
+#else
+#define NSECS_PER_SEC 1
+#define CORETIMETYPE CORE_TICKS
+#define GETMYTIME(_t) (*_t = 0)
+#endif
 #define MYTIMEDIFF(fin, ini) ((fin) - (ini))
 #define TIMER_RES_DIVIDER 1
 #define SAMPLE_TIME_IMPLEMENTATION 1

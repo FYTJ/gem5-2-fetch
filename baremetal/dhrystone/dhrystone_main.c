@@ -12,7 +12,11 @@
 #include "dhrystone.h"
 
 // void debug_printf(const char *str, ...);
+#if defined(DHRYSTONE_SILENT) && DHRYSTONE_SILENT
+#define debug_printf(...) ((void)0)
+#else
 #define debug_printf xprintf
+#endif
 
 #include "util.h"
 #include <alloca.h>
@@ -52,7 +56,9 @@ int main(int argc, char **argv)
 /* main program, corresponds to procedures        */
 /* Main and Proc_0 in the Ada version             */
 {
+#if !defined(DHRYSTONE_SILENT) || !DHRYSTONE_SILENT
   uart_init();
+#endif
   One_Fifty Int_1_Loc;
   REG One_Fifty Int_2_Loc;
   One_Fifty Int_3_Loc;

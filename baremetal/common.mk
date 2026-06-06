@@ -33,7 +33,7 @@ LINKER_SCRIPT := $(COMMON_DIR)/link.lds
 INCLUDES += -I$(COMMON_DIR)
 INCLUDES += -I$(COMMON_DIR)/include
 
-LDFLAGS += -T $(LINKER_SCRIPT) -nostartfiles -Wl,--gc-sections -Wl,--check-sections
+LDFLAGS += -T $(LINKER_SCRIPT) -nostartfiles -nostdlib -Wl,--gc-sections -Wl,--check-sections -lgcc
 
 # Define objects (sort to remove duplicates)
 ASM_OBJS := $(sort $(addprefix $(BUILD_DIR)/, $(notdir $(ASM_SRCS:.S=.o))))
@@ -74,4 +74,3 @@ $(BUILD_DIR)/%.o: %.c
 
 clean:
 	rm -rf $(CLEAN_DIRS)
-

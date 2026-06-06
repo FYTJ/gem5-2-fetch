@@ -14,6 +14,9 @@ _start:
   csrw mtvec, t0
 
   call main
+  bnez a0, .Lmain_failed
+  RVTEST_EXIT_PASS
+.Lmain_failed:
   RVTEST_EXIT_FAIL
 
 loop:
