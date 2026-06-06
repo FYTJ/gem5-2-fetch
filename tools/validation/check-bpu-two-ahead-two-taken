@@ -638,6 +638,7 @@ def validate(
     predictions: dict[str, dict[str, Any]] = {}
     states: dict[str, set[str]] = {}
     invalidated_metadata_ids: set[str] = set()
+    parent_invalidated_metadata_ids: set[str] = set()
     flushed_metadata_sample: list[str] = []
     flushed_metadata_sample_limit = 1000
     metadata_count = 0
@@ -671,6 +672,8 @@ def validate(
         etype = event.get("event")
         metadata_id = event.get("metadata_id")
         metadata_id_s = str(metadata_id) if metadata_id is not None else None
+        if metadata_id_s is not None and event.get("two_fetch_parent_invalidated") is True:
+            parent_invalidated_metadata_ids.add(metadata_id_s)
         if metadata_id_s is not None and metadata_id_s in states:
             metadata_id_s = str(metadata_id)
             state = str(event.get("metadata_state", STATE_ALIASES.get(str(etype), str(etype))))
@@ -722,6 +725,16 @@ def validate(
                         if mid in states:
                             states[mid].add("flushed")
                         metadata_to_drop.add(mid)
+            for mid in event.get("parent_invalidated_metadata_ids", []):
+                mid_s = str(mid)
+                parent_invalidated_metadata_ids.add(mid_s)
+                if mid_s not in metadata_to_drop:
+                    errors.append(
+                        f"event[{idx}] parent-invalidated metadata_id {mid_s} "
+                        "is not listed in invalidated_metadata_ids"
+                    )
+                    record_flushed(mid_s)
+                    metadata_to_drop.add(mid_s)
             for mid in metadata_to_drop:
                 predictions.pop(mid, None)
                 states.pop(mid, None)
@@ -729,6 +742,12 @@ def validate(
             if metadata_id is None:
                 errors.append(f"event[{idx}] train missing metadata_id")
                 continue
+            if event.get("two_fetch_parent_invalidated") is True:
+                errors.append(f"event[{idx}] train marks metadata_id {metadata_id_s} parent-invalidated")
+            if metadata_id_s in parent_invalidated_metadata_ids:
+                errors.append(
+                    f"event[{idx}] train references parent-invalidated metadata_id {metadata_id_s}"
+                )
             pred = predictions.get(metadata_id_s)
             if pred is None:
                 if metadata_id_s in invalidated_metadata_ids:
@@ -843,6 +862,7 @@ def validate(
         "flushed_metadata_count": len(invalidated_metadata_ids),
         "flushed_metadata_ids": sorted(flushed_metadata_sample),
         "flushed_metadata_ids_truncated": len(invalidated_metadata_ids) > len(flushed_metadata_sample),
+        "two_fetch_parent_invalidated_metadata_count": len(parent_invalidated_metadata_ids),
         "two_fetch_predict_response_count": two_fetch_predict_response_count,
         "two_fetch_batches_requiring_consume": len(two_fetch_batches_expected),
         "two_fetch_batches_flushed_count": len(two_fetch_batches_flushed),
