@@ -1,0 +1,163 @@
+{
+  "events": [
+    {
+      "event": "predict_response",
+      "cycle": 1,
+      "pc": "0x80000000",
+      "fetch_id": 100,
+      "taken": true,
+      "target": "0x80000100",
+      "source": "tage",
+      "metadata_id": "m100",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "two_fetch",
+      "two_fetch_batch_id": 100,
+      "two_fetch_batch_size": 2,
+      "two_fetch_window_slot": 0,
+      "two_fetch_materialized": true,
+      "two_fetch_prediction_kind": "predictor_backed_accepted",
+      "two_fetch_predictor_backed": true,
+      "two_fetch_prediction_accepted": true,
+      "two_fetch_pred_hit": true,
+      "two_fetch_pred_taken": true,
+      "two_fetch_pred_return": false,
+      "two_fetch_pred_indirect": false,
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000000",
+          "fallthrough": "0x80000040",
+          "source": "base",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000100",
+          "fallthrough": "0x80000140",
+          "source": "target",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": true,
+          "window_slot": 0,
+          "pc": "0x80000010",
+          "target": "0x80000100",
+          "source": "tage",
+          "kind": "cond",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": false
+        }
+      ]
+    },
+    {
+      "event": "predict_response",
+      "cycle": 2,
+      "pc": "0x80000100",
+      "fetch_id": 101,
+      "taken": false,
+      "target": "0x80000140",
+      "source": "two_fetch",
+      "metadata_id": "m101",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "two_fetch",
+      "two_fetch_batch_id": 100,
+      "two_fetch_batch_size": 2,
+      "two_fetch_window_slot": 1,
+      "two_fetch_parent_fetch_id": 100,
+      "two_fetch_materialized": true,
+      "two_fetch_prediction_kind": "predictor_backed_accepted",
+      "two_fetch_predictor_backed": true,
+      "two_fetch_prediction_accepted": true,
+      "two_fetch_pred_hit": true,
+      "two_fetch_pred_taken": false,
+      "two_fetch_pred_return": false,
+      "two_fetch_pred_indirect": false,
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000100",
+          "fallthrough": "0x80000140",
+          "source": "two_fetch",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000140",
+          "fallthrough": "0x80000180",
+          "source": "fallthrough",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": false
+        },
+        {
+          "slot": 1,
+          "valid": false
+        }
+      ]
+    },
+    {
+      "event": "fetch_consume",
+      "cycle": 3,
+      "fetch_id": 101,
+      "metadata_id": "m101",
+      "metadata_state": "fetch_consume",
+      "epoch": "e0",
+      "two_fetch_batch_id": 100,
+      "two_fetch_window_slot": 1,
+      "start_pc": "0x80000100",
+      "pred_end_pc": "0x80000140",
+      "consumed_insts": 4
+    },
+    {
+      "event": "resolve",
+      "cycle": 4,
+      "pc": "0x80000010",
+      "fetch_id": 100,
+      "actual_taken": true,
+      "actual_target": "0x80000100",
+      "metadata_id": "m100",
+      "metadata_state": "resolved",
+      "epoch": "e0"
+    },
+    {
+      "event": "train",
+      "cycle": 5,
+      "pc": "0x80000010",
+      "outcome": {
+        "taken": true,
+        "target": "0x80000100"
+      },
+      "metadata_id": "m100",
+      "metadata_state": "trained",
+      "epoch": "e0",
+      "tables": [
+        "tage"
+      ]
+    },
+    {
+      "event": "commit",
+      "cycle": 6,
+      "pc": "0x80000000",
+      "fetch_id": 100,
+      "metadata_id": "m100",
+      "metadata_state": "committed",
+      "epoch": "e0"
+    }
+  ]
+}
