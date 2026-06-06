@@ -1,0 +1,57 @@
+{
+  "events": [
+    {
+      "event": "predict_response",
+      "cycle": 1,
+      "pc": "0x80000100",
+      "fetch_id": 101,
+      "taken": false,
+      "target": "0x80000140",
+      "source": "two_fetch",
+      "metadata_id": "m101",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "two_fetch",
+      "two_fetch_batch_id": 100,
+      "two_fetch_batch_size": 2,
+      "two_fetch_window_slot": 1,
+      "two_fetch_parent_fetch_id": 100,
+      "two_fetch_materialized": true,
+      "two_fetch_prediction_kind": "predictor_backed_accepted",
+      "two_fetch_predictor_backed": true,
+      "two_fetch_prediction_accepted": true,
+      "two_fetch_pred_hit": false,
+      "two_fetch_pred_taken": false,
+      "two_fetch_pred_return": false,
+      "two_fetch_pred_indirect": false,
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000100",
+          "fallthrough": "0x80000140",
+          "source": "two_fetch",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000140",
+          "fallthrough": "0x80000180",
+          "source": "fallthrough",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": false
+        },
+        {
+          "slot": 1,
+          "valid": false
+        }
+      ]
+    }
+  ]
+}
