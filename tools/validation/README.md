@@ -36,6 +36,16 @@ tools/validation/run-l3-xiangshan --stage isa --suite supported-cross-77 --outpu
 tools/validation/check-validation-summary-consistency
 ```
 
+BPU 2-ahead + 2-taken 语义 checker 独立于基础 `check-bpu-trace-schema`。基础 checker 只检查 predict/resolve/redirect/flush/train/commit 的事件结构；语义 checker 额外检查每个预测入口的 ahead window 数量、taken slot 上限、window1 派生、taken 顺序和 flush 后旧 metadata 不再训练：
+
+```bash
+tools/validation/check-bpu-two-ahead-two-taken --sample
+tools/validation/check-bpu-two-ahead-two-taken --input tools/validation/fixtures/bpu-two-ahead-two-taken/valid.json
+tools/validation/check-bpu-two-ahead-two-taken --input tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-too-many-taken.json --expect-fail
+tools/validation/check-bpu-two-ahead-two-taken --input tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-window-order.json --expect-fail
+tools/validation/check-bpu-two-ahead-two-taken --input tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-stale-epoch-train.json --expect-fail
+```
+
 RV64 随机抽样验证入口用于从 manifest 中选择同时具备 GEM5 和 XiangShan 后端产物、且不含 trap/CSR/counter/PMP 等高风险需求标签的测试：
 
 ```bash

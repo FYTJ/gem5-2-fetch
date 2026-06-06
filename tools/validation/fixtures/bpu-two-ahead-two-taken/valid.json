@@ -1,0 +1,185 @@
+{
+  "events": [
+    {
+      "event": "predict_request",
+      "cycle": 1,
+      "pc": "0x80000000",
+      "fetch_id": 10,
+      "metadata_id": "m10",
+      "epoch": "e0"
+    },
+    {
+      "event": "predict_response",
+      "cycle": 2,
+      "pc": "0x80000000",
+      "fetch_id": 10,
+      "taken": false,
+      "target": "0x80000040",
+      "source": "base",
+      "metadata_id": "m10",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "shadow",
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000000",
+          "fallthrough": "0x80000040",
+          "source": "base",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000040",
+          "fallthrough": "0x80000080",
+          "source": "fallthrough",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": false
+        },
+        {
+          "slot": 1,
+          "valid": false
+        }
+      ]
+    },
+    {
+      "event": "resolve",
+      "cycle": 3,
+      "pc": "0x80000000",
+      "fetch_id": 10,
+      "actual_taken": false,
+      "actual_target": "0x80000040",
+      "metadata_id": "m10",
+      "metadata_state": "resolved",
+      "epoch": "e0"
+    },
+    {
+      "event": "train",
+      "cycle": 4,
+      "pc": "0x80000000",
+      "outcome": {
+        "taken": false,
+        "target": "0x80000040"
+      },
+      "metadata_id": "m10",
+      "metadata_state": "trained",
+      "epoch": "e0",
+      "tables": [
+        "base"
+      ]
+    },
+    {
+      "event": "commit",
+      "cycle": 5,
+      "pc": "0x80000000",
+      "fetch_id": 10,
+      "metadata_id": "m10",
+      "metadata_state": "committed",
+      "epoch": "e0"
+    },
+    {
+      "event": "predict_request",
+      "cycle": 10,
+      "pc": "0x80000080",
+      "fetch_id": 11,
+      "metadata_id": "m11",
+      "epoch": "e0"
+    },
+    {
+      "event": "predict_response",
+      "cycle": 11,
+      "pc": "0x80000080",
+      "fetch_id": 11,
+      "taken": true,
+      "target": "0x80000100",
+      "source": "tage",
+      "metadata_id": "m11",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "shadow",
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000080",
+          "fallthrough": "0x800000c0",
+          "source": "base",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000100",
+          "fallthrough": "0x80000140",
+          "source": "target",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": true,
+          "window_slot": 0,
+          "pc": "0x80000090",
+          "target": "0x80000100",
+          "source": "tage",
+          "kind": "cond",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "window_slot": 1,
+          "pc": "0x80000110",
+          "target": "0x80000200",
+          "source": "abtb",
+          "kind": "uncond",
+          "epoch": "e0"
+        }
+      ]
+    },
+    {
+      "event": "resolve",
+      "cycle": 12,
+      "pc": "0x80000090",
+      "fetch_id": 11,
+      "actual_taken": true,
+      "actual_target": "0x80000100",
+      "metadata_id": "m11",
+      "metadata_state": "resolved",
+      "epoch": "e0"
+    },
+    {
+      "event": "train",
+      "cycle": 13,
+      "pc": "0x80000090",
+      "outcome": {
+        "taken": true,
+        "target": "0x80000100"
+      },
+      "metadata_id": "m11",
+      "metadata_state": "trained",
+      "epoch": "e0",
+      "tables": [
+        "abtb",
+        "tage"
+      ]
+    },
+    {
+      "event": "commit",
+      "cycle": 14,
+      "pc": "0x80000090",
+      "fetch_id": 11,
+      "metadata_id": "m11",
+      "metadata_state": "committed",
+      "epoch": "e0"
+    }
+  ]
+}

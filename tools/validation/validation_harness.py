@@ -175,6 +175,15 @@ def build_gates(root: Path, manifest: dict, linux_root: Path, eda_root: Path) ->
             timeout=60,
         ),
         Gate(
+            layer="l2",
+            target="bpu-two-ahead-two-taken",
+            workload="2-ahead/2-taken window, slot, epoch semantics",
+            host="linux",
+            cwd=linux_root_s,
+            command="tools/validation/check-bpu-two-ahead-two-taken --sample --output build/validation/bpu-two-ahead-two-taken/results.json",
+            timeout=60,
+        ),
+        Gate(
             layer="l25",
             target="wally-isa-matrix",
             workload=f"rv64ui/rv64um/rv64mi manifest ({total} tests)",

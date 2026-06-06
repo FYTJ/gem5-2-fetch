@@ -1,0 +1,91 @@
+{
+  "events": [
+    {
+      "event": "predict_response",
+      "cycle": 1,
+      "pc": "0x80000000",
+      "fetch_id": 40,
+      "taken": false,
+      "target": "0x80000040",
+      "source": "base",
+      "metadata_id": "m40",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "shadow",
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000000",
+          "fallthrough": "0x80000040",
+          "source": "base",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000040",
+          "fallthrough": "0x80000080",
+          "source": "fallthrough",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": false
+        },
+        {
+          "slot": 1,
+          "valid": false
+        }
+      ]
+    },
+    {
+      "event": "flush",
+      "cycle": 2,
+      "flush_id": "f40",
+      "begin_fetch_id": 40,
+      "end_fetch_id": 40,
+      "reason": "redirect",
+      "invalidated_metadata_ids": [
+        "m40"
+      ]
+    },
+    {
+      "event": "train",
+      "cycle": 3,
+      "pc": "0x80000000",
+      "outcome": {
+        "taken": false,
+        "target": "0x80000040"
+      },
+      "metadata_id": "m40",
+      "metadata_state": "trained",
+      "epoch": "e0",
+      "tables": [
+        "base"
+      ]
+    },
+    {
+      "event": "resolve",
+      "cycle": 4,
+      "pc": "0x80000000",
+      "fetch_id": 40,
+      "actual_taken": false,
+      "actual_target": "0x80000040",
+      "metadata_id": "m40",
+      "metadata_state": "resolved",
+      "epoch": "e0"
+    },
+    {
+      "event": "commit",
+      "cycle": 5,
+      "pc": "0x80000000",
+      "fetch_id": 40,
+      "metadata_id": "m40",
+      "metadata_state": "committed",
+      "epoch": "e0"
+    }
+  ]
+}

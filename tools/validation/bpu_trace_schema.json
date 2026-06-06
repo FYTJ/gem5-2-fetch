@@ -16,5 +16,48 @@
     "committed",
     "flushed"
   ],
-  "description": "模块级 BPU trace/transaction schema，只验证事件结构和 metadata 生命周期可观测性，不判断分支预测语义是否正确。"
+  "semantic_extensions": {
+    "two_ahead_two_taken": {
+      "checker": "tools/validation/check-bpu-two-ahead-two-taken",
+      "predict_response_required_fields": [
+        "epoch",
+        "ahead_windows",
+        "taken_slots"
+      ],
+      "ahead_window_fields": [
+        "slot",
+        "valid",
+        "pc",
+        "fallthrough",
+        "source",
+        "epoch"
+      ],
+      "taken_slot_fields_when_valid": [
+        "slot",
+        "valid",
+        "window_slot",
+        "pc",
+        "target",
+        "source",
+        "epoch"
+      ],
+      "semantic_rules": [
+        "每个 predict_response 最多两个 ahead_windows。",
+        "每个 predict_response 最多两个 valid taken_slots。",
+        "window0.pc 必须等于 predict_response.pc。",
+        "window1.pc 必须来自 window0 fallthrough 或第一个 taken slot target。",
+        "valid taken slot 必须位于其所属 ahead window 的 [pc, fallthrough) 范围内。",
+        "第一个 valid taken slot 必须等于 predict_response 的 functional target。",
+        "flush invalidated metadata 后不允许继续 train 旧 metadata。",
+        "functional 模式若声明消费第二 window，必须提供 functional_consume_evidence。"
+      ],
+      "fixtures": [
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/valid.json",
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-too-many-taken.json",
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-window-order.json",
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-stale-epoch-train.json"
+      ]
+    }
+  },
+  "description": "模块级 BPU trace/transaction schema。check-bpu-trace-schema 只验证基础事件结构和 metadata 生命周期可观测性；check-bpu-two-ahead-two-taken 额外验证 2-ahead + 2-taken 的窗口、taken 上限、顺序和 epoch 生命周期语义。"
 }

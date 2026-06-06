@@ -1,0 +1,85 @@
+{
+  "events": [
+    {
+      "event": "predict_response",
+      "cycle": 1,
+      "pc": "0x80000000",
+      "fetch_id": 30,
+      "taken": true,
+      "target": "0x80000100",
+      "source": "tage",
+      "metadata_id": "m30",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "shadow",
+      "ahead_windows": [
+        {
+          "slot": 0,
+          "valid": true,
+          "pc": "0x80000000",
+          "fallthrough": "0x80000040",
+          "source": "base",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": true,
+          "pc": "0x80000400",
+          "fallthrough": "0x80000440",
+          "source": "bad",
+          "epoch": "e0"
+        }
+      ],
+      "taken_slots": [
+        {
+          "slot": 0,
+          "valid": true,
+          "window_slot": 0,
+          "pc": "0x80000008",
+          "target": "0x80000100",
+          "source": "tage",
+          "epoch": "e0"
+        },
+        {
+          "slot": 1,
+          "valid": false
+        }
+      ]
+    },
+    {
+      "event": "resolve",
+      "cycle": 2,
+      "pc": "0x80000008",
+      "fetch_id": 30,
+      "actual_taken": true,
+      "actual_target": "0x80000100",
+      "metadata_id": "m30",
+      "metadata_state": "resolved",
+      "epoch": "e0"
+    },
+    {
+      "event": "train",
+      "cycle": 3,
+      "pc": "0x80000008",
+      "outcome": {
+        "taken": true,
+        "target": "0x80000100"
+      },
+      "metadata_id": "m30",
+      "metadata_state": "trained",
+      "epoch": "e0",
+      "tables": [
+        "tage"
+      ]
+    },
+    {
+      "event": "commit",
+      "cycle": 4,
+      "pc": "0x80000008",
+      "fetch_id": 30,
+      "metadata_id": "m30",
+      "metadata_state": "committed",
+      "epoch": "e0"
+    }
+  ]
+}

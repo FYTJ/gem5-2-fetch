@@ -1,0 +1,680 @@
+#!/usr/bin/env python3
+"""Validate 2-ahead + 2-taken BPU shadow/functional trace semantics."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+
+SAMPLE_EVENTS: list[dict[str, Any]] = [
+    {
+        "event": "predict_request",
+        "cycle": 1,
+        "pc": "0x80000000",
+        "fetch_id": 100,
+        "metadata_id": "m100",
+        "epoch": "e0",
+    },
+    {
+        "event": "predict_response",
+        "cycle": 2,
+        "pc": "0x80000000",
+        "fetch_id": 100,
+        "taken": False,
+        "target": "0x80000040",
+        "source": "base",
+        "metadata_id": "m100",
+        "metadata_state": "allocated",
+        "epoch": "e0",
+        "mode": "shadow",
+        "ahead_windows": [
+            {
+                "slot": 0,
+                "valid": True,
+                "pc": "0x80000000",
+                "fallthrough": "0x80000040",
+                "source": "base",
+                "epoch": "e0",
+            },
+            {
+                "slot": 1,
+                "valid": True,
+                "pc": "0x80000040",
+                "fallthrough": "0x80000080",
+                "source": "fallthrough",
+                "epoch": "e0",
+            },
+        ],
+        "taken_slots": [
+            {"slot": 0, "valid": False},
+            {"slot": 1, "valid": False},
+        ],
+    },
+    {
+        "event": "resolve",
+        "cycle": 5,
+        "pc": "0x80000000",
+        "fetch_id": 100,
+        "actual_taken": False,
+        "actual_target": "0x80000040",
+        "metadata_id": "m100",
+        "metadata_state": "resolved",
+        "epoch": "e0",
+    },
+    {
+        "event": "train",
+        "cycle": 6,
+        "pc": "0x80000000",
+        "outcome": {"taken": False, "target": "0x80000040"},
+        "metadata_id": "m100",
+        "metadata_state": "trained",
+        "epoch": "e0",
+        "tables": ["base"],
+    },
+    {
+        "event": "commit",
+        "cycle": 7,
+        "pc": "0x80000000",
+        "fetch_id": 100,
+        "metadata_id": "m100",
+        "metadata_state": "committed",
+        "epoch": "e0",
+    },
+    {
+        "event": "predict_request",
+        "cycle": 10,
+        "pc": "0x80000040",
+        "fetch_id": 101,
+        "metadata_id": "m101",
+        "epoch": "e0",
+    },
+    {
+        "event": "predict_response",
+        "cycle": 11,
+        "pc": "0x80000040",
+        "fetch_id": 101,
+        "taken": True,
+        "target": "0x80000100",
+        "source": "tage",
+        "metadata_id": "m101",
+        "metadata_state": "allocated",
+        "epoch": "e0",
+        "mode": "shadow",
+        "ahead_windows": [
+            {
+                "slot": 0,
+                "valid": True,
+                "pc": "0x80000040",
+                "fallthrough": "0x80000080",
+                "source": "base",
+                "epoch": "e0",
+            },
+            {
+                "slot": 1,
+                "valid": True,
+                "pc": "0x80000100",
+                "fallthrough": "0x80000140",
+                "source": "target",
+                "epoch": "e0",
+            },
+        ],
+        "taken_slots": [
+            {
+                "slot": 0,
+                "valid": True,
+                "window_slot": 0,
+                "pc": "0x80000050",
+                "target": "0x80000100",
+                "source": "tage",
+                "kind": "cond",
+                "epoch": "e0",
+            },
+            {"slot": 1, "valid": False},
+        ],
+    },
+    {
+        "event": "resolve",
+        "cycle": 14,
+        "pc": "0x80000050",
+        "fetch_id": 101,
+        "actual_taken": True,
+        "actual_target": "0x80000100",
+        "metadata_id": "m101",
+        "metadata_state": "resolved",
+        "epoch": "e0",
+    },
+    {
+        "event": "train",
+        "cycle": 15,
+        "pc": "0x80000050",
+        "outcome": {"taken": True, "target": "0x80000100"},
+        "metadata_id": "m101",
+        "metadata_state": "trained",
+        "epoch": "e0",
+        "tables": ["ubtb", "abtb", "tage"],
+    },
+    {
+        "event": "commit",
+        "cycle": 16,
+        "pc": "0x80000050",
+        "fetch_id": 101,
+        "metadata_id": "m101",
+        "metadata_state": "committed",
+        "epoch": "e0",
+    },
+    {
+        "event": "predict_request",
+        "cycle": 20,
+        "pc": "0x80000100",
+        "fetch_id": 102,
+        "metadata_id": "m102",
+        "epoch": "e0",
+    },
+    {
+        "event": "predict_response",
+        "cycle": 21,
+        "pc": "0x80000100",
+        "fetch_id": 102,
+        "taken": True,
+        "target": "0x80000200",
+        "source": "tage",
+        "metadata_id": "m102",
+        "metadata_state": "allocated",
+        "epoch": "e0",
+        "mode": "shadow",
+        "ahead_windows": [
+            {
+                "slot": 0,
+                "valid": True,
+                "pc": "0x80000100",
+                "fallthrough": "0x80000140",
+                "source": "base",
+                "epoch": "e0",
+            },
+            {
+                "slot": 1,
+                "valid": True,
+                "pc": "0x80000200",
+                "fallthrough": "0x80000240",
+                "source": "target",
+                "epoch": "e0",
+            },
+        ],
+        "taken_slots": [
+            {
+                "slot": 0,
+                "valid": True,
+                "window_slot": 0,
+                "pc": "0x80000110",
+                "target": "0x80000200",
+                "source": "tage",
+                "kind": "cond",
+                "epoch": "e0",
+            },
+            {
+                "slot": 1,
+                "valid": True,
+                "window_slot": 1,
+                "pc": "0x80000210",
+                "target": "0x80000300",
+                "source": "abtb",
+                "kind": "uncond",
+                "epoch": "e0",
+            },
+        ],
+    },
+    {
+        "event": "resolve",
+        "cycle": 24,
+        "pc": "0x80000110",
+        "fetch_id": 102,
+        "actual_taken": True,
+        "actual_target": "0x80000200",
+        "metadata_id": "m102",
+        "metadata_state": "resolved",
+        "epoch": "e0",
+    },
+    {
+        "event": "train",
+        "cycle": 25,
+        "pc": "0x80000110",
+        "outcome": {"taken": True, "target": "0x80000200"},
+        "metadata_id": "m102",
+        "metadata_state": "trained",
+        "epoch": "e0",
+        "tables": ["abtb", "tage", "mgsc"],
+    },
+    {
+        "event": "commit",
+        "cycle": 26,
+        "pc": "0x80000110",
+        "fetch_id": 102,
+        "metadata_id": "m102",
+        "metadata_state": "committed",
+        "epoch": "e0",
+    },
+    {
+        "event": "predict_request",
+        "cycle": 30,
+        "pc": "0x90000000",
+        "fetch_id": 103,
+        "metadata_id": "m103",
+        "epoch": "e1",
+    },
+    {
+        "event": "predict_response",
+        "cycle": 31,
+        "pc": "0x90000000",
+        "fetch_id": 103,
+        "taken": False,
+        "target": "0x90000040",
+        "source": "base",
+        "metadata_id": "m103",
+        "metadata_state": "allocated",
+        "epoch": "e1",
+        "mode": "shadow",
+        "ahead_windows": [
+            {
+                "slot": 0,
+                "valid": True,
+                "pc": "0x90000000",
+                "fallthrough": "0x90000040",
+                "source": "base",
+                "epoch": "e1",
+            },
+            {
+                "slot": 1,
+                "valid": True,
+                "pc": "0x90000040",
+                "fallthrough": "0x90000080",
+                "source": "fallthrough",
+                "epoch": "e1",
+            },
+        ],
+        "taken_slots": [
+            {"slot": 0, "valid": False},
+            {"slot": 1, "valid": False},
+        ],
+    },
+    {
+        "event": "redirect",
+        "cycle": 32,
+        "from_pc": "0x90000004",
+        "target": "0x90001000",
+        "reason": "mispredict",
+        "flush_id": "f1",
+        "metadata_id": "m103",
+        "epoch": "e1",
+    },
+    {
+        "event": "flush",
+        "cycle": 33,
+        "flush_id": "f1",
+        "begin_fetch_id": 103,
+        "end_fetch_id": 103,
+        "reason": "redirect",
+        "invalidated_metadata_ids": ["m103"],
+    },
+]
+
+
+STATE_ALIASES = {
+    "predict_response": "allocated",
+    "resolve": "resolved",
+    "train": "trained",
+    "commit": "committed",
+}
+
+
+def load_events(path: Path | None, use_sample: bool) -> list[dict[str, Any]]:
+    if use_sample:
+        return SAMPLE_EVENTS
+    if path is None:
+        raise ValueError("either --sample or --input is required")
+    if path.suffix == ".jsonl":
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data["events"] if isinstance(data, dict) and "events" in data else data
+
+
+def parse_addr(value: Any, field: str, errors: list[str], idx: int) -> int | None:
+    if isinstance(value, bool):
+        errors.append(f"event[{idx}] {field} must be an address, got bool")
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            errors.append(f"event[{idx}] {field} is not a valid address: {value!r}")
+            return None
+    errors.append(f"event[{idx}] {field} must be int or 0x string")
+    return None
+
+
+def required(mapping: dict[str, Any], fields: set[str], prefix: str, errors: list[str]) -> bool:
+    missing = fields - set(mapping)
+    if missing:
+        errors.append(f"{prefix} missing fields: {sorted(missing)}")
+        return False
+    return True
+
+
+def validate_predict_response(idx: int, event: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    required(
+        event,
+        {
+            "pc",
+            "target",
+            "taken",
+            "fetch_id",
+            "metadata_id",
+            "epoch",
+            "ahead_windows",
+            "taken_slots",
+        },
+        f"event[{idx}] predict_response",
+        errors,
+    )
+    if errors:
+        return errors
+
+    event_pc = parse_addr(event["pc"], "pc", errors, idx)
+    event_target = parse_addr(event["target"], "target", errors, idx)
+    epoch = event["epoch"]
+
+    windows = event["ahead_windows"]
+    if not isinstance(windows, list) or not 1 <= len(windows) <= 2:
+        errors.append(f"event[{idx}] ahead_windows must contain one or two windows")
+        return errors
+
+    window_by_slot: dict[int, dict[str, Any]] = {}
+    valid_window_slots: set[int] = set()
+    for widx, window in enumerate(windows):
+        if not isinstance(window, dict):
+            errors.append(f"event[{idx}] ahead_windows[{widx}] must be an object")
+            continue
+        if not required(
+            window,
+            {"slot", "valid", "pc", "fallthrough", "source", "epoch"},
+            f"event[{idx}] ahead_windows[{widx}]",
+            errors,
+        ):
+            continue
+        slot = window["slot"]
+        if slot not in (0, 1):
+            errors.append(f"event[{idx}] ahead_windows[{widx}] slot must be 0 or 1")
+            continue
+        if slot in window_by_slot:
+            errors.append(f"event[{idx}] duplicate ahead window slot {slot}")
+            continue
+        window_by_slot[slot] = window
+        if window["epoch"] != epoch:
+            errors.append(f"event[{idx}] ahead_windows[{widx}] epoch does not match event epoch")
+        pc = parse_addr(window["pc"], f"ahead_windows[{widx}].pc", errors, idx)
+        fallthrough = parse_addr(window["fallthrough"], f"ahead_windows[{widx}].fallthrough", errors, idx)
+        if window.get("valid"):
+            valid_window_slots.add(slot)
+            if pc is not None and fallthrough is not None and pc >= fallthrough:
+                errors.append(f"event[{idx}] ahead_windows[{widx}] fallthrough must be greater than pc")
+
+    window0 = window_by_slot.get(0)
+    if window0 is None or not window0.get("valid"):
+        errors.append(f"event[{idx}] window slot 0 must be present and valid")
+        return errors
+    window0_pc = parse_addr(window0["pc"], "ahead_windows[slot=0].pc", errors, idx)
+    window0_fallthrough = parse_addr(
+        window0["fallthrough"], "ahead_windows[slot=0].fallthrough", errors, idx
+    )
+    if event_pc is not None and window0_pc is not None and event_pc != window0_pc:
+        errors.append(f"event[{idx}] window0 pc must match predict_response pc")
+
+    taken_slots = event["taken_slots"]
+    if not isinstance(taken_slots, list) or len(taken_slots) == 0:
+        errors.append(f"event[{idx}] taken_slots must be a non-empty list")
+        return errors
+
+    valid_taken: list[dict[str, Any]] = []
+    seen_taken_slots: set[int] = set()
+    for sidx, slot in enumerate(taken_slots):
+        if not isinstance(slot, dict):
+            errors.append(f"event[{idx}] taken_slots[{sidx}] must be an object")
+            continue
+        if not required(slot, {"slot", "valid"}, f"event[{idx}] taken_slots[{sidx}]", errors):
+            continue
+        slot_id = slot["slot"]
+        if not isinstance(slot_id, int) or slot_id < 0:
+            errors.append(f"event[{idx}] taken_slots[{sidx}] slot must be a non-negative integer")
+            continue
+        if slot_id in seen_taken_slots:
+            errors.append(f"event[{idx}] duplicate taken slot {slot_id}")
+            continue
+        seen_taken_slots.add(slot_id)
+        if not slot.get("valid"):
+            continue
+        if not required(
+            slot,
+            {"window_slot", "pc", "target", "source", "epoch"},
+            f"event[{idx}] taken_slots[{sidx}]",
+            errors,
+        ):
+            continue
+        if slot["epoch"] != epoch:
+            errors.append(f"event[{idx}] taken_slots[{sidx}] epoch does not match event epoch")
+        window_slot = slot["window_slot"]
+        if window_slot not in valid_window_slots:
+            errors.append(f"event[{idx}] taken_slots[{sidx}] references invalid window_slot {window_slot}")
+            continue
+        branch_pc = parse_addr(slot["pc"], f"taken_slots[{sidx}].pc", errors, idx)
+        target = parse_addr(slot["target"], f"taken_slots[{sidx}].target", errors, idx)
+        window = window_by_slot[window_slot]
+        window_pc = parse_addr(window["pc"], f"window[{window_slot}].pc", errors, idx)
+        window_fallthrough = parse_addr(
+            window["fallthrough"], f"window[{window_slot}].fallthrough", errors, idx
+        )
+        if (
+            branch_pc is not None
+            and window_pc is not None
+            and window_fallthrough is not None
+            and not (window_pc <= branch_pc < window_fallthrough)
+        ):
+            errors.append(
+                f"event[{idx}] taken_slots[{sidx}] pc is outside its ahead window range"
+            )
+        if target is not None:
+            valid_taken.append(slot)
+
+    if len(valid_taken) > 2:
+        errors.append(f"event[{idx}] has {len(valid_taken)} valid taken slots, maximum is 2")
+
+    expected_order = sorted(
+        valid_taken,
+        key=lambda slot: (
+            int(slot["window_slot"]),
+            parse_addr(slot["pc"], "taken_slots.pc", errors, idx) or -1,
+        ),
+    )
+    if valid_taken != expected_order:
+        errors.append(f"event[{idx}] taken slots are not in window/program order")
+    for expected_slot, slot in enumerate(valid_taken):
+        if slot.get("slot") != expected_slot:
+            errors.append(
+                f"event[{idx}] valid taken slot order must be dense from 0; "
+                f"got slot {slot.get('slot')} at position {expected_slot}"
+            )
+
+    window1 = window_by_slot.get(1)
+    if window1 is not None and window1.get("valid"):
+        window1_pc = parse_addr(window1["pc"], "ahead_windows[slot=1].pc", errors, idx)
+        allowed_next_pcs: set[int] = set()
+        if window0_fallthrough is not None:
+            allowed_next_pcs.add(window0_fallthrough)
+        if valid_taken and valid_taken[0].get("window_slot") == 0:
+            first_target = parse_addr(valid_taken[0]["target"], "taken_slots[0].target", errors, idx)
+            if first_target is not None:
+                allowed_next_pcs.add(first_target)
+        if window1_pc is not None and window1_pc not in allowed_next_pcs:
+            allowed = [hex(value) for value in sorted(allowed_next_pcs)]
+            errors.append(
+                f"event[{idx}] window1 pc {hex(window1_pc)} is not derived from "
+                f"window0 fallthrough or first taken target: {allowed}"
+            )
+
+    if valid_taken:
+        first_target = parse_addr(valid_taken[0]["target"], "taken_slots[0].target", errors, idx)
+        if event.get("taken") is not True:
+            errors.append(f"event[{idx}] predict_response must be taken when slot0 is valid")
+        if event_target is not None and first_target is not None and event_target != first_target:
+            errors.append(f"event[{idx}] predict_response target must match slot0 target")
+    else:
+        if event.get("taken") is not False:
+            errors.append(f"event[{idx}] predict_response must be fall-through when no taken slot is valid")
+        if (
+            event_target is not None
+            and window0_fallthrough is not None
+            and event_target != window0_fallthrough
+        ):
+            errors.append(f"event[{idx}] fall-through target must match window0 fallthrough")
+
+    if event.get("mode") == "functional":
+        consumed = int(event.get("functional_consumed_windows", 0))
+        if event.get("consumed_second_window"):
+            consumed = max(consumed, 2)
+        if consumed > 1 and not event.get("functional_consume_evidence"):
+            errors.append(
+                f"event[{idx}] functional trace consumed window1 without consume evidence"
+            )
+
+    return errors
+
+
+def validate(events: list[dict[str, Any]]) -> tuple[str, list[str], dict[str, Any]]:
+    errors: list[str] = []
+    predictions: dict[str, dict[str, Any]] = {}
+    states: dict[str, set[str]] = {}
+    invalidated_metadata_ids: set[str] = set()
+    predict_response_count = 0
+
+    for idx, event in enumerate(events):
+        if not isinstance(event, dict):
+            errors.append(f"event[{idx}] must be an object")
+            continue
+        etype = event.get("event")
+        metadata_id = event.get("metadata_id")
+        if metadata_id is not None:
+            metadata_id_s = str(metadata_id)
+            state = str(event.get("metadata_state", STATE_ALIASES.get(str(etype), str(etype))))
+            states.setdefault(metadata_id_s, set()).add(state)
+
+        if etype == "predict_response":
+            predict_response_count += 1
+            errors.extend(validate_predict_response(idx, event))
+            if metadata_id is not None:
+                predictions[str(metadata_id)] = {
+                    "fetch_id": event.get("fetch_id"),
+                    "epoch": event.get("epoch"),
+                }
+        elif etype == "flush":
+            for mid in event.get("invalidated_metadata_ids", []):
+                invalidated_metadata_ids.add(str(mid))
+                states.setdefault(str(mid), set()).add("flushed")
+            begin = event.get("begin_fetch_id")
+            end = event.get("end_fetch_id")
+            if isinstance(begin, int) and isinstance(end, int):
+                for mid, pred in predictions.items():
+                    fetch_id = pred.get("fetch_id")
+                    if isinstance(fetch_id, int) and begin <= fetch_id <= end:
+                        invalidated_metadata_ids.add(mid)
+                        states.setdefault(mid, set()).add("flushed")
+        elif etype == "train":
+            if metadata_id is None:
+                errors.append(f"event[{idx}] train missing metadata_id")
+                continue
+            metadata_id_s = str(metadata_id)
+            pred = predictions.get(metadata_id_s)
+            if pred is None:
+                errors.append(f"event[{idx}] train references unknown metadata_id {metadata_id_s}")
+                continue
+            if metadata_id_s in invalidated_metadata_ids:
+                errors.append(f"event[{idx}] train references flushed metadata_id {metadata_id_s}")
+            if event.get("epoch") != pred.get("epoch"):
+                errors.append(f"event[{idx}] train epoch does not match prediction epoch")
+
+    if predict_response_count == 0:
+        errors.append("trace must contain at least one predict_response")
+
+    full_lifecycle = {"allocated", "resolved", "trained", "committed"}
+    if not any(full_lifecycle <= metadata_states for metadata_states in states.values()):
+        errors.append(
+            "metadata lifecycle must include allocated/resolved/trained/committed "
+            "for at least one non-flushed metadata_id"
+        )
+
+    details = {
+        "predict_response_count": predict_response_count,
+        "metadata_count": len(states),
+        "flushed_metadata_ids": sorted(invalidated_metadata_ids),
+    }
+    return ("pass" if not errors else "fail"), errors, details
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sample", action="store_true")
+    parser.add_argument("--input", type=Path)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("build/validation/bpu-two-ahead-two-taken/results.json"),
+    )
+    parser.add_argument(
+        "--expect-fail",
+        action="store_true",
+        help="Return success only if the semantic checker reports fail.",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        events = load_events(args.input, args.sample)
+        status, errors, details = validate(events)
+    except Exception as exc:
+        status, errors, details, events = "fail", [str(exc)], {}, []
+
+    expectation_status = "not_applicable"
+    if args.expect_fail:
+        expectation_status = "met" if status == "fail" else "unmet"
+
+    payload = {
+        "schema_version": 2,
+        "layer": "l2",
+        "target": "bpu-two-ahead-two-taken",
+        "status": status,
+        "expectation": "fail" if args.expect_fail else "pass",
+        "expectation_status": expectation_status,
+        "errors": errors,
+        "event_count": len(events),
+        **details,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    print(f"VALIDATION_STATUS={status}")
+    print("VALIDATION_REASON=bpu 2-ahead 2-taken semantics")
+    if args.expect_fail:
+        print(f"VALIDATION_EXPECTATION={expectation_status}")
+        return 0 if expectation_status == "met" else 1
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
