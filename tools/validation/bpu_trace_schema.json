@@ -49,13 +49,16 @@
         "valid taken slot 必须位于其所属 ahead window 的 [pc, fallthrough) 范围内。",
         "第一个 valid taken slot 必须等于 predict_response 的 functional target。",
         "flush invalidated metadata 后不允许继续 train 旧 metadata。",
-        "functional 模式若声明消费第二 window，必须提供 functional_consume_evidence。"
+        "functional 模式若声明消费第二 window，必须提供 functional_consume_evidence。",
+        "two_fetch 模式声明 batch_size=2 时必须物化 window1，并提供 fetch_consume 或 fetch_window_consume 事件作为 window1 消费证据。"
       ],
       "fixtures": [
         "tools/validation/fixtures/bpu-two-ahead-two-taken/valid.json",
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/valid-two-fetch.json",
         "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-too-many-taken.json",
         "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-window-order.json",
-        "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-stale-epoch-train.json"
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-stale-epoch-train.json",
+        "tools/validation/fixtures/bpu-two-ahead-two-taken/invalid-two-fetch-missing-consume.json"
       ]
     }
   },

@@ -330,6 +330,22 @@ STATE_ALIASES = {
     "commit": "committed",
 }
 
+TWO_FETCH_MODES = {"two_fetch", "two-fetch", "2fetch", "2-fetch"}
+
+
+def is_two_fetch_mode(event: dict[str, Any]) -> bool:
+    return str(event.get("mode", "")).lower() in TWO_FETCH_MODES
+
+
+def parse_positive_int(value: Any, field: str, errors: list[str], idx: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        errors.append(f"event[{idx}] {field} must be a positive integer")
+        return None
+    if value <= 0:
+        errors.append(f"event[{idx}] {field} must be positive")
+        return None
+    return value
+
 
 def iter_events(path: Path | None, use_sample: bool) -> Iterator[tuple[int, Any]]:
     if use_sample:
@@ -558,6 +574,35 @@ def validate_predict_response(idx: int, event: dict[str, Any]) -> list[str]:
                 f"event[{idx}] functional trace consumed window1 without consume evidence"
             )
 
+    if is_two_fetch_mode(event):
+        if not required(
+            event,
+            {
+                "two_fetch_batch_id",
+                "two_fetch_batch_size",
+                "two_fetch_window_slot",
+                "two_fetch_materialized",
+            },
+            f"event[{idx}] two_fetch predict_response",
+            errors,
+        ):
+            return errors
+        batch_size = parse_positive_int(
+            event.get("two_fetch_batch_size"),
+            "two_fetch_batch_size",
+            errors,
+            idx,
+        )
+        window_slot = event.get("two_fetch_window_slot")
+        if window_slot not in (0, 1):
+            errors.append(f"event[{idx}] two_fetch_window_slot must be 0 or 1")
+        if batch_size is not None and batch_size > 2:
+            errors.append(f"event[{idx}] two_fetch_batch_size must not exceed 2")
+        if event.get("two_fetch_materialized") is not True:
+            errors.append(f"event[{idx}] two_fetch predict_response must be materialized")
+        if window_slot == 1 and "two_fetch_parent_fetch_id" not in event:
+            errors.append(f"event[{idx}] window1 two_fetch entry missing parent fetch id")
+
     return errors
 
 
@@ -572,6 +617,14 @@ def validate(events: Iterable[tuple[int, Any]]) -> tuple[str, list[str], dict[st
     event_count = 0
     predict_response_count = 0
     full_lifecycle_found = False
+    two_fetch_batches_expected: set[str] = set()
+    two_fetch_batches_with_window1: set[str] = set()
+    two_fetch_batches_consumed: set[str] = set()
+    two_fetch_window1_metadata: dict[str, str] = {}
+    two_fetch_window1_metadata_consumed: set[str] = set()
+    two_fetch_predict_response_count = 0
+    two_fetch_window1_materialized_count = 0
+    two_fetch_window1_consume_count = 0
 
     def record_flushed(metadata_id: str) -> None:
         if metadata_id in invalidated_metadata_ids:
@@ -605,6 +658,18 @@ def validate(events: Iterable[tuple[int, Any]]) -> tuple[str, list[str], dict[st
                     "epoch": event.get("epoch"),
                 }
                 states.setdefault(metadata_id_s, set()).add("allocated")
+            if is_two_fetch_mode(event):
+                two_fetch_predict_response_count += 1
+                batch_id = str(event.get("two_fetch_batch_id"))
+                batch_size = event.get("two_fetch_batch_size")
+                window_slot = event.get("two_fetch_window_slot")
+                if isinstance(batch_size, int) and batch_size >= 2:
+                    two_fetch_batches_expected.add(batch_id)
+                if window_slot == 1:
+                    two_fetch_window1_materialized_count += 1
+                    two_fetch_batches_with_window1.add(batch_id)
+                    if metadata_id_s is not None:
+                        two_fetch_window1_metadata[metadata_id_s] = batch_id
         elif etype == "flush":
             metadata_to_drop: set[str] = set()
             for mid in event.get("invalidated_metadata_ids", []):
@@ -647,6 +712,20 @@ def validate(events: Iterable[tuple[int, Any]]) -> tuple[str, list[str], dict[st
                 full_lifecycle_found = True
             predictions.pop(metadata_id_s, None)
             states.pop(metadata_id_s, None)
+        elif etype in {"fetch_consume", "fetch_window_consume"}:
+            window_slot = event.get("two_fetch_window_slot", event.get("window_slot"))
+            if window_slot == 1:
+                two_fetch_window1_consume_count += 1
+                batch_id = event.get("two_fetch_batch_id")
+                if batch_id is not None:
+                    two_fetch_batches_consumed.add(str(batch_id))
+                if metadata_id_s is not None:
+                    two_fetch_window1_metadata_consumed.add(metadata_id_s)
+                consumed_insts = event.get("consumed_insts", event.get("insts"))
+                if not isinstance(consumed_insts, int) or consumed_insts <= 0:
+                    errors.append(
+                        f"event[{idx}] window1 consume evidence must report positive consumed_insts"
+                    )
 
     if predict_response_count == 0:
         errors.append("trace must contain at least one predict_response")
@@ -656,6 +735,15 @@ def validate(events: Iterable[tuple[int, Any]]) -> tuple[str, list[str], dict[st
             "metadata lifecycle must include allocated/resolved/trained/committed "
             "for at least one non-flushed metadata_id"
         )
+
+    for batch_id in sorted(two_fetch_batches_expected):
+        if batch_id not in two_fetch_batches_with_window1:
+            errors.append(f"two_fetch batch {batch_id} declared two windows but no window1 entry was materialized")
+        if batch_id not in two_fetch_batches_consumed:
+            errors.append(f"two_fetch batch {batch_id} materialized window1 without fetch consume evidence")
+    for metadata_id, batch_id in sorted(two_fetch_window1_metadata.items()):
+        if metadata_id not in two_fetch_window1_metadata_consumed and batch_id not in two_fetch_batches_consumed:
+            errors.append(f"two_fetch window1 metadata_id {metadata_id} has no fetch consume evidence")
 
     error_count = len(errors)
     if error_count > 1000:
@@ -669,6 +757,10 @@ def validate(events: Iterable[tuple[int, Any]]) -> tuple[str, list[str], dict[st
         "flushed_metadata_count": len(invalidated_metadata_ids),
         "flushed_metadata_ids": sorted(flushed_metadata_sample),
         "flushed_metadata_ids_truncated": len(invalidated_metadata_ids) > len(flushed_metadata_sample),
+        "two_fetch_predict_response_count": two_fetch_predict_response_count,
+        "two_fetch_batches_requiring_consume": len(two_fetch_batches_expected),
+        "two_fetch_window1_materialized_count": two_fetch_window1_materialized_count,
+        "two_fetch_window1_consume_count": two_fetch_window1_consume_count,
     }
     return ("pass" if error_count == 0 else "fail"), errors, details
 

@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Collect GEM5 stats with 2-fetch-focused summaries.
+
+The parser keeps every numeric counter, sums counters across multiple GEM5
+statistics windows, and highlights counters that are useful for reviewing
+2-fetch materialization, consumption, fallback, and front-end pressure.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+
+NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+FOCUS_PATTERNS = (
+    "twoFetch",
+    "two_fetch",
+    "twoAhead",
+    "window1",
+    "ftq",
+    "FSQ",
+    "fetch",
+    "Frontend",
+    "override",
+    "mispred",
+    "icache",
+    "Icache",
+    "numCycles",
+    "simTicks",
+    "simInsts",
+    "committedInsts",
+    "hostSeconds",
+)
+
+
+def parse_value(raw: str) -> float | None:
+    if not NUMERIC_RE.match(raw):
+        return None
+    value = float(raw)
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return value
+
+
+def read_stats(path: Path) -> dict[str, Any]:
+    windows: list[dict[str, float]] = []
+    current: dict[str, float] = {}
+    saw_window_marker = False
+
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("---------- Begin Simulation Statistics"):
+            saw_window_marker = True
+            current = {}
+            continue
+        if line.startswith("---------- End Simulation Statistics"):
+            saw_window_marker = True
+            windows.append(current)
+            current = {}
+            continue
+        if line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        value = parse_value(parts[1])
+        if value is None:
+            continue
+        current[parts[0]] = value
+
+    if current or not saw_window_marker:
+        windows.append(current)
+
+    summed: dict[str, float] = {}
+    for window in windows:
+        for key, value in window.items():
+            summed[key] = summed.get(key, 0.0) + value
+
+    focused = {
+        key: value
+        for key, value in sorted(summed.items())
+        if any(pattern in key for pattern in FOCUS_PATTERNS)
+    }
+    return {
+        "path": str(path),
+        "window_count": len(windows),
+        "metric_count": len(summed),
+        "metrics": dict(sorted(summed.items())),
+        "focused_metrics": focused,
+    }
+
+
+def build_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, float]:
+    before_metrics = before["metrics"]
+    after_metrics = after["metrics"]
+    keys = sorted(set(before_metrics) | set(after_metrics))
+    return {
+        key: after_metrics.get(key, 0.0) - before_metrics.get(key, 0.0)
+        for key in keys
+        if after_metrics.get(key, 0.0) != before_metrics.get(key, 0.0)
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stats", type=Path, required=True, help="candidate GEM5 stats.txt")
+    parser.add_argument("--baseline", type=Path, help="optional baseline GEM5 stats.txt")
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(argv)
+
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "target": "gem5-two-fetch-stats",
+        "candidate": read_stats(args.stats),
+    }
+    if args.baseline:
+        payload["baseline"] = read_stats(args.baseline)
+        payload["delta"] = build_delta(payload["baseline"], payload["candidate"])
+        payload["focused_delta"] = {
+            key: value
+            for key, value in sorted(payload["delta"].items())
+            if any(pattern in key for pattern in FOCUS_PATTERNS)
+        }
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary: dict[str, Any] = {
+        "schema_version": payload["schema_version"],
+        "target": payload["target"],
+        "output": str(args.output),
+        "candidate": {
+            "path": payload["candidate"]["path"],
+            "window_count": payload["candidate"]["window_count"],
+            "metric_count": payload["candidate"]["metric_count"],
+            "focused_metric_count": len(payload["candidate"]["focused_metrics"]),
+        },
+    }
+    if "baseline" in payload:
+        summary["baseline"] = {
+            "path": payload["baseline"]["path"],
+            "window_count": payload["baseline"]["window_count"],
+            "metric_count": payload["baseline"]["metric_count"],
+            "focused_metric_count": len(payload["baseline"]["focused_metrics"]),
+        }
+        summary["delta_count"] = len(payload.get("delta", {}))
+        summary["focused_delta_count"] = len(payload.get("focused_delta", {}))
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
