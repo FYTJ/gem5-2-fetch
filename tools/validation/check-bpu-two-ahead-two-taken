@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -330,19 +331,21 @@ STATE_ALIASES = {
 }
 
 
-def load_events(path: Path | None, use_sample: bool) -> list[dict[str, Any]]:
+def iter_events(path: Path | None, use_sample: bool) -> Iterator[tuple[int, Any]]:
     if use_sample:
-        return SAMPLE_EVENTS
+        yield from enumerate(SAMPLE_EVENTS)
+        return
     if path is None:
         raise ValueError("either --sample or --input is required")
     if path.suffix == ".jsonl":
-        return [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        with path.open(encoding="utf-8") as stream:
+            for idx, line in enumerate(stream):
+                if line.strip():
+                    yield idx, json.loads(line)
+        return
     data = json.loads(path.read_text(encoding="utf-8"))
-    return data["events"] if isinstance(data, dict) and "events" in data else data
+    events = data["events"] if isinstance(data, dict) and "events" in data else data
+    yield from enumerate(events)
 
 
 def parse_addr(value: Any, field: str, errors: list[str], idx: int) -> int | None:
@@ -558,74 +561,116 @@ def validate_predict_response(idx: int, event: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate(events: list[dict[str, Any]]) -> tuple[str, list[str], dict[str, Any]]:
+def validate(events: Iterable[tuple[int, Any]]) -> tuple[str, list[str], dict[str, Any]]:
     errors: list[str] = []
     predictions: dict[str, dict[str, Any]] = {}
     states: dict[str, set[str]] = {}
     invalidated_metadata_ids: set[str] = set()
+    flushed_metadata_sample: list[str] = []
+    flushed_metadata_sample_limit = 1000
+    metadata_count = 0
+    event_count = 0
     predict_response_count = 0
+    full_lifecycle_found = False
+
+    def record_flushed(metadata_id: str) -> None:
+        if metadata_id in invalidated_metadata_ids:
+            return
+        invalidated_metadata_ids.add(metadata_id)
+        if len(flushed_metadata_sample) < flushed_metadata_sample_limit:
+            flushed_metadata_sample.append(metadata_id)
 
     for idx, event in enumerate(events):
+        if isinstance(event, tuple) and len(event) == 2:
+            idx, event = event
+        event_count += 1
         if not isinstance(event, dict):
             errors.append(f"event[{idx}] must be an object")
             continue
         etype = event.get("event")
         metadata_id = event.get("metadata_id")
-        if metadata_id is not None:
+        metadata_id_s = str(metadata_id) if metadata_id is not None else None
+        if metadata_id_s is not None and metadata_id_s in states:
             metadata_id_s = str(metadata_id)
             state = str(event.get("metadata_state", STATE_ALIASES.get(str(etype), str(etype))))
-            states.setdefault(metadata_id_s, set()).add(state)
+            states[metadata_id_s].add(state)
 
         if etype == "predict_response":
             predict_response_count += 1
             errors.extend(validate_predict_response(idx, event))
-            if metadata_id is not None:
-                predictions[str(metadata_id)] = {
+            if metadata_id_s is not None:
+                metadata_count += 1
+                predictions[metadata_id_s] = {
                     "fetch_id": event.get("fetch_id"),
                     "epoch": event.get("epoch"),
                 }
+                states.setdefault(metadata_id_s, set()).add("allocated")
         elif etype == "flush":
+            metadata_to_drop: set[str] = set()
             for mid in event.get("invalidated_metadata_ids", []):
-                invalidated_metadata_ids.add(str(mid))
-                states.setdefault(str(mid), set()).add("flushed")
+                mid_s = str(mid)
+                record_flushed(mid_s)
+                if mid_s in states:
+                    states[mid_s].add("flushed")
+                metadata_to_drop.add(mid_s)
             begin = event.get("begin_fetch_id")
             end = event.get("end_fetch_id")
             if isinstance(begin, int) and isinstance(end, int):
                 for mid, pred in predictions.items():
                     fetch_id = pred.get("fetch_id")
                     if isinstance(fetch_id, int) and begin <= fetch_id <= end:
-                        invalidated_metadata_ids.add(mid)
-                        states.setdefault(mid, set()).add("flushed")
+                        record_flushed(mid)
+                        if mid in states:
+                            states[mid].add("flushed")
+                        metadata_to_drop.add(mid)
+            for mid in metadata_to_drop:
+                predictions.pop(mid, None)
+                states.pop(mid, None)
         elif etype == "train":
             if metadata_id is None:
                 errors.append(f"event[{idx}] train missing metadata_id")
                 continue
-            metadata_id_s = str(metadata_id)
             pred = predictions.get(metadata_id_s)
             if pred is None:
-                errors.append(f"event[{idx}] train references unknown metadata_id {metadata_id_s}")
+                if metadata_id_s in invalidated_metadata_ids:
+                    errors.append(f"event[{idx}] train references flushed metadata_id {metadata_id_s}")
+                else:
+                    errors.append(f"event[{idx}] train references unknown metadata_id {metadata_id_s}")
                 continue
             if metadata_id_s in invalidated_metadata_ids:
                 errors.append(f"event[{idx}] train references flushed metadata_id {metadata_id_s}")
             if event.get("epoch") != pred.get("epoch"):
                 errors.append(f"event[{idx}] train epoch does not match prediction epoch")
+        elif etype == "commit" and metadata_id_s is not None:
+            metadata_states = states.get(metadata_id_s, set())
+            if {"allocated", "resolved", "trained", "committed"} <= metadata_states:
+                full_lifecycle_found = True
+            predictions.pop(metadata_id_s, None)
+            states.pop(metadata_id_s, None)
 
     if predict_response_count == 0:
         errors.append("trace must contain at least one predict_response")
 
-    full_lifecycle = {"allocated", "resolved", "trained", "committed"}
-    if not any(full_lifecycle <= metadata_states for metadata_states in states.values()):
+    if not full_lifecycle_found:
         errors.append(
             "metadata lifecycle must include allocated/resolved/trained/committed "
             "for at least one non-flushed metadata_id"
         )
 
+    error_count = len(errors)
+    if error_count > 1000:
+        errors = errors[:1000] + [f"{error_count - 1000} additional errors truncated"]
+
     details = {
+        "event_count": event_count,
+        "error_count": error_count,
         "predict_response_count": predict_response_count,
-        "metadata_count": len(states),
-        "flushed_metadata_ids": sorted(invalidated_metadata_ids),
+        "metadata_count": metadata_count,
+        "flushed_metadata_count": len(invalidated_metadata_ids),
+        "flushed_metadata_ids": sorted(flushed_metadata_sample),
+        "flushed_metadata_ids_truncated": len(invalidated_metadata_ids) > len(flushed_metadata_sample),
     }
-    return ("pass" if not errors else "fail"), errors, details
+    return ("pass" if error_count == 0 else "fail"), errors, details
 
 
 def main(argv: list[str]) -> int:
@@ -645,10 +690,9 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     try:
-        events = load_events(args.input, args.sample)
-        status, errors, details = validate(events)
+        status, errors, details = validate(iter_events(args.input, args.sample))
     except Exception as exc:
-        status, errors, details, events = "fail", [str(exc)], {}, []
+        status, errors, details = "fail", [str(exc)], {}
 
     expectation_status = "not_applicable"
     if args.expect_fail:
@@ -662,7 +706,6 @@ def main(argv: list[str]) -> int:
         "expectation": "fail" if args.expect_fail else "pass",
         "expectation_status": expectation_status,
         "errors": errors,
-        "event_count": len(events),
         **details,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
