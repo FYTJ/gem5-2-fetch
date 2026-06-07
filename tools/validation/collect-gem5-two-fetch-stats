@@ -70,7 +70,38 @@ def parse_value(raw: str) -> float | None:
     return value
 
 
-def read_stats(path: Path) -> dict[str, Any]:
+def focus_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    return {
+        key: value
+        for key, value in sorted(metrics.items())
+        if any(pattern in key for pattern in FOCUS_PATTERNS)
+    }
+
+
+def sum_windows(windows: list[dict[str, float]]) -> dict[str, float]:
+    summed: dict[str, float] = {}
+    for window in windows:
+        for key, value in window.items():
+            summed[key] = summed.get(key, 0.0) + value
+    return summed
+
+
+def select_window_metrics(
+    windows: list[dict[str, float]],
+    window_mode: str,
+) -> tuple[dict[str, float], int | None]:
+    if window_mode == "sum":
+        return sum_windows(windows), None
+    if not windows:
+        return {}, None
+    if window_mode == "first":
+        return dict(windows[0]), 0
+    if window_mode == "last":
+        return dict(windows[-1]), len(windows) - 1
+    raise ValueError(f"unsupported stats window mode: {window_mode}")
+
+
+def read_stats(path: Path, *, window_mode: str = "sum") -> dict[str, Any]:
     windows: list[dict[str, float]] = []
     current: dict[str, float] = {}
     saw_window_marker = False
@@ -101,22 +132,25 @@ def read_stats(path: Path) -> dict[str, Any]:
     if current or not saw_window_marker:
         windows.append(current)
 
-    summed: dict[str, float] = {}
-    for window in windows:
-        for key, value in window.items():
-            summed[key] = summed.get(key, 0.0) + value
-
-    focused = {
-        key: value
-        for key, value in sorted(summed.items())
-        if any(pattern in key for pattern in FOCUS_PATTERNS)
-    }
+    selected_metrics, selected_window_index = select_window_metrics(windows, window_mode)
+    window_payload = [
+        {
+            "index": index,
+            "metric_count": len(window),
+            "metrics": dict(sorted(window.items())),
+            "focused_metrics": focus_metrics(window),
+        }
+        for index, window in enumerate(windows)
+    ]
     return {
         "path": str(path),
+        "window_mode": window_mode,
         "window_count": len(windows),
-        "metric_count": len(summed),
-        "metrics": dict(sorted(summed.items())),
-        "focused_metrics": focused,
+        "selected_window_index": selected_window_index,
+        "metric_count": len(selected_metrics),
+        "metrics": dict(sorted(selected_metrics.items())),
+        "focused_metrics": focus_metrics(selected_metrics),
+        "windows": window_payload,
     }
 
 
@@ -136,15 +170,21 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--stats", type=Path, required=True, help="candidate GEM5 stats.txt")
     parser.add_argument("--baseline", type=Path, help="optional baseline GEM5 stats.txt")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--window",
+        choices=("sum", "first", "last"),
+        default="sum",
+        help="stats window to report as candidate.metrics; use last for warmup/reset measured runs",
+    )
     args = parser.parse_args(argv)
 
     payload: dict[str, Any] = {
         "schema_version": 1,
         "target": "gem5-two-fetch-stats",
-        "candidate": read_stats(args.stats),
+        "candidate": read_stats(args.stats, window_mode=args.window),
     }
     if args.baseline:
-        payload["baseline"] = read_stats(args.baseline)
+        payload["baseline"] = read_stats(args.baseline, window_mode=args.window)
         payload["delta"] = build_delta(payload["baseline"], payload["candidate"])
         payload["focused_delta"] = {
             key: value
@@ -160,7 +200,9 @@ def main(argv: list[str]) -> int:
         "output": str(args.output),
         "candidate": {
             "path": payload["candidate"]["path"],
+            "window_mode": payload["candidate"]["window_mode"],
             "window_count": payload["candidate"]["window_count"],
+            "selected_window_index": payload["candidate"]["selected_window_index"],
             "metric_count": payload["candidate"]["metric_count"],
             "focused_metric_count": len(payload["candidate"]["focused_metrics"]),
         },
@@ -168,7 +210,9 @@ def main(argv: list[str]) -> int:
     if "baseline" in payload:
         summary["baseline"] = {
             "path": payload["baseline"]["path"],
+            "window_mode": payload["baseline"]["window_mode"],
             "window_count": payload["baseline"]["window_count"],
+            "selected_window_index": payload["baseline"]["selected_window_index"],
             "metric_count": payload["baseline"]["metric_count"],
             "focused_metric_count": len(payload["baseline"]["focused_metrics"]),
         }

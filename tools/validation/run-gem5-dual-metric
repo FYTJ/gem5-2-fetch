@@ -1,0 +1,492 @@
+#!/usr/bin/env python3
+"""Run GEM5 with end-to-end or warmup/reset measured 2-fetch metrics."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).astimezone().isoformat()
+
+
+def command_text(command: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def run_capture(command: list[str], cwd: Path) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        return proc.returncode, proc.stdout
+    except FileNotFoundError as exc:
+        return 127, str(exc)
+
+
+def directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def process_tree(pid: int) -> dict[str, Any]:
+    rc, ps_out = run_capture(
+        ["ps", "-eo", "pid=,ppid=,rss=,vsz=,pcpu=,pmem=,etime=,command="],
+        repo_root(),
+    )
+    if rc != 0:
+        return {
+            "ps_status": rc,
+            "ps": ps_out.strip(),
+            "process_tree_pids": [],
+            "process_tree_rss_kib": 0,
+            "process_tree_vsz_kib": 0,
+        }
+
+    rows: list[dict[str, Any]] = []
+    children: dict[int, list[int]] = {}
+    by_pid: dict[int, dict[str, Any]] = {}
+    for line in ps_out.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) < 8:
+            continue
+        try:
+            row = {
+                "pid": int(parts[0]),
+                "ppid": int(parts[1]),
+                "rss_kib": int(parts[2]),
+                "vsz_kib": int(parts[3]),
+                "pcpu": parts[4],
+                "pmem": parts[5],
+                "etime": parts[6],
+                "command": parts[7],
+            }
+        except ValueError:
+            continue
+        rows.append(row)
+        by_pid[row["pid"]] = row
+        children.setdefault(row["ppid"], []).append(row["pid"])
+
+    selected: list[int] = []
+    stack = [pid]
+    while stack:
+        current = stack.pop()
+        if current in selected:
+            continue
+        selected.append(current)
+        stack.extend(children.get(current, []))
+
+    selected_rows = [by_pid[item] for item in selected if item in by_pid]
+    return {
+        "ps_status": 0,
+        "ps": "\n".join(
+            f"{row['pid']} {row['ppid']} {row['rss_kib']} {row['vsz_kib']} "
+            f"{row['pcpu']} {row['pmem']} {row['etime']} {row['command']}"
+            for row in selected_rows
+        ),
+        "process_tree_pids": selected,
+        "process_tree_rss_kib": sum(row["rss_kib"] for row in selected_rows),
+        "process_tree_vsz_kib": sum(row["vsz_kib"] for row in selected_rows),
+    }
+
+
+def resource_snapshot(pid: int | None, runroot: Path, m5out: Path) -> dict[str, Any]:
+    root = repo_root()
+    disk_root = shutil.disk_usage("/")
+    disk_workspace = shutil.disk_usage(root)
+    snapshot: dict[str, Any] = {
+        "timestamp": now_iso(),
+        "pid": pid,
+        "disk_root_free_bytes": disk_root.free,
+        "disk_workspace_free_bytes": disk_workspace.free,
+        "m5out_bytes": directory_size(m5out),
+    }
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        for raw in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = raw.split()
+            if len(parts) >= 2 and parts[0].rstrip(":") in {
+                "MemTotal",
+                "MemAvailable",
+                "SwapTotal",
+                "SwapFree",
+            }:
+                snapshot[f"{parts[0].rstrip(':')}_kib"] = int(parts[1])
+    if pid is not None:
+        snapshot.update(process_tree(pid))
+    rc, free_out = run_capture(["free", "-h"], root)
+    snapshot["free_status"] = rc
+    snapshot["free"] = free_out.strip()
+    rc, df_out = run_capture(["df", "-h", "/", str(root)], root)
+    snapshot["df_status"] = rc
+    snapshot["df"] = df_out.strip()
+    return snapshot
+
+
+def write_monitor_line(handle: Any, snapshot: dict[str, Any]) -> None:
+    handle.write(json.dumps(snapshot, sort_keys=True) + "\n")
+    handle.flush()
+
+
+def monitor_resources(
+    pid: int,
+    runroot: Path,
+    m5out: Path,
+    interval: float,
+    stop_event: threading.Event,
+) -> None:
+    with (runroot / "resource-monitor.jsonl").open("w", encoding="utf-8") as handle:
+        while not stop_event.is_set():
+            write_monitor_line(handle, resource_snapshot(pid, runroot, m5out))
+            stop_event.wait(interval)
+        write_monitor_line(handle, resource_snapshot(pid, runroot, m5out))
+
+
+def workload_image(args: argparse.Namespace, root: Path) -> tuple[Path, str]:
+    checkpoint_kind = args.checkpoint_kind
+    if args.image:
+        if checkpoint_kind == "auto":
+            checkpoint_kind = "raw"
+        return Path(args.image), checkpoint_kind
+    if args.workload == "dhrystone":
+        return root / "baremetal/dhrystone/build/dhrystone.bin", "raw"
+    if args.workload == "coremark":
+        return root / "baremetal/coremark/build/coremark.bin", "raw"
+    if args.workload == "spec06":
+        if not args.checkpoint:
+            raise SystemExit("--checkpoint is required for --workload spec06")
+        if checkpoint_kind == "auto":
+            checkpoint_kind = "rvh"
+        return Path(args.checkpoint), checkpoint_kind
+    raise SystemExit(f"unsupported workload: {args.workload}")
+
+
+def metric_insts(args: argparse.Namespace) -> tuple[int, int, int, str]:
+    if args.metric == "end-to-end":
+        return args.e2e_insts, 0, args.e2e_insts, "sum"
+    total = args.warmup_insts + args.measure_insts
+    return total, args.warmup_insts, args.measure_insts, "last"
+
+
+def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[str], dict[str, Any]]:
+    root = repo_root()
+    total_insts, warmup_insts, measure_insts, stats_window = metric_insts(args)
+    image, checkpoint_kind = workload_image(args, root)
+    gem5 = root / args.gem5
+    config = root / args.config
+    m5out = runroot / "m5out"
+    trace_policy = args.trace_policy
+    if args.mode == "off":
+        trace_policy = "disabled"
+    elif trace_policy == "auto":
+        trace_policy = "disabled" if args.workload == "spec06" else "enabled"
+
+    command = [
+        str(gem5),
+        "-d",
+        str(m5out),
+        str(config),
+        "--mem-type",
+        args.mem_type,
+        f"--warmup-insts-no-switch={warmup_insts}",
+        "-I",
+        str(total_insts),
+    ]
+    if args.mode == "on":
+        command.append("--enable-bpu-two-fetch")
+        if trace_policy == "disabled":
+            command.append("--disable-bpu-two-fetch-trace")
+    if args.difftest_mode == "enabled":
+        command.extend(["--enable-difftest", f"--difftest-ref-so={args.difftest_ref_so}"])
+
+    if checkpoint_kind == "raw":
+        command.extend(["--raw-cpt", f"--generic-rv-cpt={image}"])
+    elif checkpoint_kind == "rvh":
+        command.extend([
+            "--restore-rvh-cpt",
+            "--enable-h-gcpt",
+            "--gcpt-restorer=None",
+            f"--generic-rv-cpt={image}",
+        ])
+    elif checkpoint_kind == "generic":
+        command.append(f"--generic-rv-cpt={image}")
+    else:
+        raise SystemExit(f"unsupported checkpoint kind: {checkpoint_kind}")
+
+    for extra in args.extra_gem5_arg:
+        command.append(extra)
+
+    metadata = {
+        "total_insts": total_insts,
+        "warmup_insts": warmup_insts,
+        "measure_insts": measure_insts,
+        "stats_window": stats_window,
+        "trace_policy": trace_policy,
+        "checkpoint_kind": checkpoint_kind,
+        "image": str(image),
+        "m5out": str(m5out),
+    }
+    return command, metadata
+
+
+def preflight(args: argparse.Namespace, runroot: Path, m5out: Path) -> dict[str, Any]:
+    snapshot = resource_snapshot(None, runroot, m5out)
+    mem_available_gib = snapshot.get("MemAvailable_kib", 0) / (1024 * 1024)
+    workspace_free_gib = snapshot["disk_workspace_free_bytes"] / (1024 ** 3)
+    requested = max(1, args.parallel_jobs_requested)
+    effective = requested
+    if args.min_mem_gib_per_job > 0 and mem_available_gib > 0:
+        effective = min(effective, max(1, int(mem_available_gib // args.min_mem_gib_per_job)))
+    if args.min_workspace_free_gib > 0 and workspace_free_gib < args.min_workspace_free_gib:
+        effective = 1
+    snapshot.update(
+        {
+            "parallel_jobs_requested": requested,
+            "parallel_jobs_effective": effective,
+            "min_mem_gib_per_job": args.min_mem_gib_per_job,
+            "min_workspace_free_gib": args.min_workspace_free_gib,
+            "mem_available_gib": mem_available_gib,
+            "workspace_free_gib": workspace_free_gib,
+        }
+    )
+    return snapshot
+
+
+def run_checker(args: argparse.Namespace, runroot: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+    trace = runroot / "m5out" / "bpu-two-ahead-two-taken.jsonl"
+    output = runroot / "checker-strict.json"
+    log = runroot / "checker.log"
+    if args.mode == "off":
+        log.write_text("two-fetch trace absent as expected for MODE=off\n", encoding="utf-8")
+        output.write_text(
+            json.dumps({"status": "pass", "reason": "two_fetch_disabled_no_trace"}) + "\n",
+            encoding="utf-8",
+        )
+        return {"status": "pass", "return_code": 0, "output": str(output), "log": str(log)}
+    if metadata["trace_policy"] == "disabled":
+        log.write_text("two-fetch trace disabled for this run\n", encoding="utf-8")
+        output.write_text(
+            json.dumps({"status": "skipped", "reason": "trace_disabled"}) + "\n",
+            encoding="utf-8",
+        )
+        return {"status": "skipped", "return_code": 0, "output": str(output), "log": str(log)}
+    if not trace.exists():
+        log.write_text("missing bpu-two-ahead-two-taken.jsonl\n", encoding="utf-8")
+        return {"status": "fail", "return_code": 3, "output": str(output), "log": str(log)}
+    command = [
+        str(repo_root() / "tools/validation/check-bpu-two-ahead-two-taken"),
+        "--input",
+        str(trace),
+        "--require-two-fetch-supply",
+        "--allow-live-tail",
+        str(args.allow_live_tail),
+        "--output",
+        str(output),
+    ]
+    with log.open("w", encoding="utf-8") as handle:
+        proc = subprocess.run(command, cwd=repo_root(), text=True, stdout=handle, stderr=subprocess.STDOUT)
+    status = "pass" if proc.returncode == 0 else "fail"
+    return {"status": status, "return_code": proc.returncode, "output": str(output), "log": str(log)}
+
+
+def run_stats_collector(runroot: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+    stats = runroot / "m5out" / "stats.txt"
+    output = runroot / "stats-focused.json"
+    log = runroot / "stats-focused.log"
+    if not stats.exists():
+        log.write_text("missing stats.txt\n", encoding="utf-8")
+        return {"status": "fail", "return_code": 4, "output": str(output), "log": str(log)}
+    command = [
+        str(repo_root() / "tools/validation/collect-gem5-two-fetch-stats"),
+        "--stats",
+        str(stats),
+        "--window",
+        metadata["stats_window"],
+        "--output",
+        str(output),
+    ]
+    with log.open("w", encoding="utf-8") as handle:
+        proc = subprocess.run(command, cwd=repo_root(), text=True, stdout=handle, stderr=subprocess.STDOUT)
+    status = "pass" if proc.returncode == 0 else "fail"
+    return {"status": status, "return_code": proc.returncode, "output": str(output), "log": str(log)}
+
+
+def parse_reset_marker_count(runlog: Path) -> int:
+    if not runlog.exists():
+        return 0
+    return runlog.read_text(encoding="utf-8", errors="replace").count(
+        "Will trigger stat dump and reset"
+    )
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workload", choices=("dhrystone", "coremark", "spec06"), required=True)
+    parser.add_argument("--mode", choices=("on", "off"), required=True)
+    parser.add_argument("--metric", choices=("end-to-end", "measured"), required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--run-root", type=Path, default=Path("build/validation/gem5-dual-metric"))
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--gem5", default="GEM5/build/RISCV/gem5.opt")
+    parser.add_argument("--config", default="GEM5/configs/example/kmhv3.py")
+    parser.add_argument("--mem-type", default="DDR4_2400_8x8")
+    parser.add_argument("--image")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--checkpoint-kind", choices=("auto", "raw", "generic", "rvh"), default="auto")
+    parser.add_argument("--difftest-mode", choices=("enabled", "disabled"), default="enabled")
+    parser.add_argument(
+        "--difftest-ref-so",
+        default="build/validation/linux-aarch64-nemu-difftest/nemu-h-extension-src/build/riscv64-nemu-interpreter-so",
+    )
+    parser.add_argument("--trace-policy", choices=("auto", "enabled", "disabled"), default="auto")
+    parser.add_argument("--e2e-insts", type=int, default=40_000_000)
+    parser.add_argument("--warmup-insts", type=int, default=20_000_000)
+    parser.add_argument("--measure-insts", type=int, default=20_000_000)
+    parser.add_argument("--timeout-seconds", type=int, default=900)
+    parser.add_argument("--monitor-interval", type=float, default=30.0)
+    parser.add_argument("--allow-live-tail", type=int, default=64)
+    parser.add_argument("--parallel-jobs-requested", type=int, default=1)
+    parser.add_argument("--min-mem-gib-per-job", type=float, default=8.0)
+    parser.add_argument("--min-workspace-free-gib", type=float, default=20.0)
+    parser.add_argument("--extra-gem5-arg", action="append", default=[])
+    args = parser.parse_args(argv)
+
+    root = repo_root()
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    runroot = root / args.run_root / f"{args.workload}-{args.mode}-{args.metric}-{stamp}"
+    m5out = runroot / "m5out"
+    runroot.mkdir(parents=True, exist_ok=True)
+
+    command, metadata = build_gem5_command(args, runroot)
+    preflight_snapshot = preflight(args, runroot, m5out)
+    result_path = root / args.output if args.output else runroot / "results.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+
+    base_result: dict[str, Any] = {
+        "schema_version": 1,
+        "target": "gem5-dual-metric",
+        "workload": args.workload,
+        "mode": args.mode,
+        "metric": args.metric,
+        "run_dir": str(runroot),
+        "cwd": str(root),
+        "command": command,
+        "command_text": command_text(command),
+        "metadata": metadata,
+        "preflight": preflight_snapshot,
+        "dry_run": args.dry_run,
+    }
+    (runroot / "command.txt").write_text(command_text(command) + "\n", encoding="utf-8")
+    (runroot / "preflight.json").write_text(
+        json.dumps(preflight_snapshot, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if args.dry_run:
+        payload = {**base_result, "status": "dry_run"}
+        result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    stdout_path = runroot / "stdout.log"
+    stderr_path = runroot / "stderr.log"
+    time_path = runroot / "time.log"
+    time_bin = shutil.which("time") or "/usr/bin/time"
+    timed_command = [time_bin, "-v", "-o", str(time_path)]
+    if args.timeout_seconds > 0:
+        timed_command.extend(["timeout", f"{args.timeout_seconds}s"])
+    timed_command.extend(command)
+
+    started_at = now_iso()
+    stop_event = threading.Event()
+    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
+        proc = subprocess.Popen(timed_command, cwd=root, text=True, stdout=stdout, stderr=stderr)
+        monitor = threading.Thread(
+            target=monitor_resources,
+            args=(proc.pid, runroot, m5out, args.monitor_interval, stop_event),
+            daemon=True,
+        )
+        monitor.start()
+        return_code = proc.wait()
+        stop_event.set()
+        monitor.join(timeout=args.monitor_interval + 5)
+    ended_at = now_iso()
+
+    reset_marker_count = parse_reset_marker_count(stdout_path) + parse_reset_marker_count(stderr_path)
+    checker = run_checker(args, runroot, metadata)
+    stats = run_stats_collector(runroot, metadata)
+
+    stats_payload: dict[str, Any] = {}
+    stats_output = Path(stats["output"])
+    if stats_output.exists():
+        stats_payload = json.loads(stats_output.read_text(encoding="utf-8"))
+    stats_window_count = stats_payload.get("candidate", {}).get("window_count")
+
+    status = "pass"
+    failure_reasons: list[str] = []
+    if return_code != 0:
+        status = "fail"
+        failure_reasons.append(f"gem5 return_code={return_code}")
+    if checker["return_code"] != 0:
+        status = "fail"
+        failure_reasons.append(f"checker return_code={checker['return_code']}")
+    if stats["return_code"] != 0:
+        status = "fail"
+        failure_reasons.append(f"stats return_code={stats['return_code']}")
+    if args.metric == "measured" and reset_marker_count == 0:
+        status = "fail"
+        failure_reasons.append("measured metric did not emit warmup reset marker")
+    if args.metric == "measured" and isinstance(stats_window_count, int) and stats_window_count < 2:
+        status = "fail"
+        failure_reasons.append("measured metric stats.txt has fewer than two windows")
+
+    payload = {
+        **base_result,
+        "status": status,
+        "failure_reasons": failure_reasons,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "return_code": return_code,
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+        "time_path": str(time_path),
+        "resource_monitor_path": str(runroot / "resource-monitor.jsonl"),
+        "reset_marker_count": reset_marker_count,
+        "checker": checker,
+        "stats": stats,
+        "stats_window_count": stats_window_count,
+    }
+    result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if status == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

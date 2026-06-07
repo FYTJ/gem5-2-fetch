@@ -1,0 +1,14 @@
+---------- Begin Simulation Statistics ----------
+simTicks 1000
+system.cpu.numCycles 500
+system.cpu.commit.committedInsts 100
+system.cpu.branchPred.twoFetchWindow1Accepted 10
+system.cpu.branchPred.twoFetchWindow1IcachePrefetchUseful 4
+---------- End Simulation Statistics ----------
+---------- Begin Simulation Statistics ----------
+simTicks 2000
+system.cpu.numCycles 900
+system.cpu.commit.committedInsts 200
+system.cpu.branchPred.twoFetchWindow1Accepted 30
+system.cpu.branchPred.twoFetchWindow1IcachePrefetchUseful 20
+---------- End Simulation Statistics ----------
