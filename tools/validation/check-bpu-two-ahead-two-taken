@@ -703,7 +703,8 @@ def validate_supply_event(
     supply_evidence_streams: set[str],
     issued_streams: set[str],
     ready_streams: set[str],
-    used_streams: set[str],
+    promoted_streams: set[str],
+    useful_streams: set[str],
 ) -> list[str]:
     errors: list[str] = []
     etype = str(event.get("event"))
@@ -765,19 +766,34 @@ def validate_supply_event(
             errors.append(f"event[{idx}] stale prefetch response must be discarded")
         if destination in READY_PREFETCH_RESPONSE_DESTINATIONS:
             ready_streams.add(stream_id)
-    elif etype in {"two_fetch_prefetch_promote", "two_fetch_prefetch_useful"}:
+    elif etype == "two_fetch_prefetch_promote":
         if stream_id in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
             errors.append(
-                f"event[{idx}] parent-invalidated window1 prefetch must not be useful"
+                f"event[{idx}] parent-invalidated window1 prefetch must not be promoted"
             )
         if stream_id not in ready_streams:
             errors.append(f"event[{idx}] prefetch promotion requires ready buffer evidence")
         consumed = event.get("consumed_insts", event.get("insts", event.get("bytes")))
         if not isinstance(consumed, int) or consumed <= 0:
             errors.append(
-                f"event[{idx}] prefetch promotion/useful must report positive consumed_insts or bytes"
+                f"event[{idx}] prefetch promotion must report positive consumed_insts or bytes"
             )
-        used_streams.add(stream_id)
+        promoted_streams.add(stream_id)
+    elif etype == "two_fetch_prefetch_useful":
+        if stream_id in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
+            errors.append(
+                f"event[{idx}] parent-invalidated window1 prefetch must not be useful"
+            )
+        if stream_id not in ready_streams:
+            errors.append(f"event[{idx}] prefetch useful requires ready buffer evidence")
+        if stream_id not in promoted_streams:
+            errors.append(f"event[{idx}] prefetch useful requires prior promotion evidence")
+        consumed = event.get("consumed_insts", event.get("insts", event.get("bytes")))
+        if not isinstance(consumed, int) or consumed <= 0:
+            errors.append(
+                f"event[{idx}] prefetch useful must report positive consumed_insts or bytes"
+            )
+        useful_streams.add(stream_id)
 
     return errors
 
@@ -812,7 +828,8 @@ def validate(
     two_fetch_supply_evidence_streams: set[str] = set()
     two_fetch_prefetch_issued_streams: set[str] = set()
     two_fetch_prefetch_ready_streams: set[str] = set()
-    two_fetch_prefetch_used_streams: set[str] = set()
+    two_fetch_prefetch_promoted_streams: set[str] = set()
+    two_fetch_prefetch_useful_streams: set[str] = set()
     two_fetch_supply_event_count = 0
     two_fetch_predict_response_count = 0
     two_fetch_window1_materialized_count = 0
@@ -856,7 +873,8 @@ def validate(
                     supply_evidence_streams=two_fetch_supply_evidence_streams,
                     issued_streams=two_fetch_prefetch_issued_streams,
                     ready_streams=two_fetch_prefetch_ready_streams,
-                    used_streams=two_fetch_prefetch_used_streams,
+                    promoted_streams=two_fetch_prefetch_promoted_streams,
+                    useful_streams=two_fetch_prefetch_useful_streams,
                 )
             )
 
@@ -1065,10 +1083,10 @@ def validate(
                 )
             if (
                 metadata_id in parent_invalidated_metadata_ids
-                and stream_id in two_fetch_prefetch_used_streams
+                and stream_id in two_fetch_prefetch_useful_streams
             ):
                 errors.append(
-                    f"two_fetch stream {stream_id} was parent-invalidated but later used"
+                    f"two_fetch stream {stream_id} was parent-invalidated but later marked useful"
                 )
 
     error_count = len(errors)
@@ -1097,7 +1115,8 @@ def validate(
         "two_fetch_stream_count": len(two_fetch_stream_epochs),
         "two_fetch_prefetch_issued_stream_count": len(two_fetch_prefetch_issued_streams),
         "two_fetch_prefetch_ready_stream_count": len(two_fetch_prefetch_ready_streams),
-        "two_fetch_prefetch_used_stream_count": len(two_fetch_prefetch_used_streams),
+        "two_fetch_prefetch_used_stream_count": len(two_fetch_prefetch_promoted_streams),
+        "two_fetch_prefetch_useful_stream_count": len(two_fetch_prefetch_useful_streams),
         "two_fetch_parent_invalidated_stream_count": len(two_fetch_parent_invalidated_streams),
     }
     return ("pass" if error_count == 0 else "fail"), errors, details
