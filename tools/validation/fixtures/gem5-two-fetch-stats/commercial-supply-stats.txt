@@ -1,0 +1,15 @@
+---------- Begin Simulation Statistics ----------
+simTicks 1000
+system.cpu.numCycles 500
+system.cpu.commit.committedInsts 128
+system.cpu.fetch.fetchBubbles 3
+system.cpu.fetch.FetchFragStall 2
+system.cpu.fetch.IcacheStall 4
+system.cpu.branchPred.btb.twoFetchWindow1IcachePrefetchReq 7
+system.cpu.branchPred.btb.twoFetchWindow1IcachePrefetchUseful 5
+system.cpu.branchPred.btb.twoFetchWindow1IcachePrefetchDropped 1
+system.cpu.branchPred.btb.twoFetchWindow1IcachePrefetchBackpressure 1
+system.cpu.branchPred.btb.twoFetchWindow1PrefetchPromotionUseful 5
+system.cpu.branchPred.btb.twoFetchWindow1PrefetchStaleResponse 0
+system.cpu.branchPred.btb.twoFetchWindow1PrefetchReadyButNotConsumed 1
+---------- End Simulation Statistics ----------

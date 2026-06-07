@@ -331,10 +331,53 @@ STATE_ALIASES = {
 }
 
 TWO_FETCH_MODES = {"two_fetch", "two-fetch", "2fetch", "2-fetch"}
+TWO_FETCH_SUPPLY_EVENTS = {
+    "two_fetch_prefetch_request",
+    "two_fetch_prefetch_response",
+    "two_fetch_prefetch_drop",
+    "two_fetch_prefetch_cancel",
+    "two_fetch_prefetch_backpressure",
+    "two_fetch_prefetch_promote",
+    "two_fetch_prefetch_useful",
+}
+BAD_PREFETCH_RESPONSE_DESTINATIONS = {
+    "fetchbuffer",
+    "fetch_buffer",
+    "current_fetch_buffer",
+    "demand",
+    "demand_buffer",
+    "demand_fetch_buffer",
+}
+DISCARD_PREFETCH_RESPONSE_DESTINATIONS = {
+    "discard",
+    "drop",
+    "dropped",
+    "cancel",
+    "cancelled",
+}
+READY_PREFETCH_RESPONSE_DESTINATIONS = {
+    "prefetch_buffer",
+    "ready_table",
+    "window1_buffer",
+}
 
 
 def is_two_fetch_mode(event: dict[str, Any]) -> bool:
     return str(event.get("mode", "")).lower() in TWO_FETCH_MODES
+
+
+def event_stream_id(event: dict[str, Any]) -> str | None:
+    raw = event.get("two_fetch_stream_id", event.get("stream_id"))
+    return str(raw) if raw is not None else None
+
+
+def event_stream_epoch(event: dict[str, Any]) -> str | None:
+    raw = event.get("two_fetch_epoch", event.get("epoch"))
+    return str(raw) if raw is not None else None
+
+
+def normalized_destination(value: Any) -> str:
+    return str(value).strip().lower() if value is not None else ""
 
 
 def parse_positive_int(value: Any, field: str, errors: list[str], idx: int) -> int | None:
@@ -388,7 +431,12 @@ def required(mapping: dict[str, Any], fields: set[str], prefix: str, errors: lis
     return True
 
 
-def validate_predict_response(idx: int, event: dict[str, Any]) -> list[str]:
+def validate_predict_response(
+    idx: int,
+    event: dict[str, Any],
+    *,
+    require_two_fetch_supply: bool = False,
+) -> list[str]:
     errors: list[str] = []
     required(
         event,
@@ -602,6 +650,23 @@ def validate_predict_response(idx: int, event: dict[str, Any]) -> list[str]:
             errors.append(f"event[{idx}] two_fetch predict_response must be materialized")
         if window_slot == 1 and "two_fetch_parent_fetch_id" not in event:
             errors.append(f"event[{idx}] window1 two_fetch entry missing parent fetch id")
+        if require_two_fetch_supply and window_slot == 1:
+            supply_required = {
+                "two_fetch_stream_id",
+                "two_fetch_epoch",
+                "two_fetch_prefetch_state",
+            }
+            required(
+                event,
+                supply_required,
+                f"event[{idx}] commercial two_fetch window1",
+                errors,
+            )
+            stream_epoch = event_stream_epoch(event)
+            if stream_epoch is not None and stream_epoch != str(epoch):
+                errors.append(
+                    f"event[{idx}] two_fetch_epoch must match prediction epoch for window1"
+                )
         prediction_kind = event.get("two_fetch_prediction_kind")
         predictor_backed = event.get("two_fetch_predictor_backed")
         prediction_accepted = event.get("two_fetch_prediction_accepted")
@@ -629,10 +694,99 @@ def validate_predict_response(idx: int, event: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_supply_event(
+    idx: int,
+    event: dict[str, Any],
+    *,
+    stream_epochs: dict[str, str],
+    parent_invalidated_streams: set[str],
+    supply_evidence_streams: set[str],
+    issued_streams: set[str],
+    ready_streams: set[str],
+    used_streams: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    etype = str(event.get("event"))
+    if etype not in TWO_FETCH_SUPPLY_EVENTS:
+        return errors
+
+    required(
+        event,
+        {
+            "two_fetch_stream_id",
+            "two_fetch_epoch",
+            "fetch_id",
+            "two_fetch_window_slot",
+        },
+        f"event[{idx}] {etype}",
+        errors,
+    )
+    stream_id = event_stream_id(event)
+    stream_epoch = event_stream_epoch(event)
+    if stream_id is None or stream_epoch is None:
+        return errors
+    supply_evidence_streams.add(stream_id)
+
+    if event.get("two_fetch_window_slot") != 1:
+        errors.append(f"event[{idx}] {etype} must refer to window1")
+
+    expected_epoch = stream_epochs.get(stream_id)
+    destination = normalized_destination(
+        event.get("destination", event.get("response_destination", event.get("buffer")))
+    )
+    is_discard = destination in DISCARD_PREFETCH_RESPONSE_DESTINATIONS
+    if expected_epoch is not None and stream_epoch != expected_epoch and not is_discard:
+        errors.append(
+            f"event[{idx}] {etype} epoch {stream_epoch!r} does not match stream epoch {expected_epoch!r}"
+        )
+
+    if etype == "two_fetch_prefetch_request":
+        required(
+            event,
+            {"cacheline_base", "line_index"},
+            f"event[{idx}] two_fetch_prefetch_request",
+            errors,
+        )
+        parse_addr(event.get("cacheline_base"), "cacheline_base", errors, idx)
+        issued_streams.add(stream_id)
+    elif etype == "two_fetch_prefetch_response":
+        required(
+            event,
+            {"destination", "cacheline_base", "line_index"},
+            f"event[{idx}] two_fetch_prefetch_response",
+            errors,
+        )
+        parse_addr(event.get("cacheline_base"), "cacheline_base", errors, idx)
+        if destination in BAD_PREFETCH_RESPONSE_DESTINATIONS:
+            errors.append(
+                f"event[{idx}] prefetch response must not write demand fetch buffer"
+            )
+        if event.get("stale") is True and not is_discard:
+            errors.append(f"event[{idx}] stale prefetch response must be discarded")
+        if destination in READY_PREFETCH_RESPONSE_DESTINATIONS:
+            ready_streams.add(stream_id)
+    elif etype in {"two_fetch_prefetch_promote", "two_fetch_prefetch_useful"}:
+        if stream_id in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
+            errors.append(
+                f"event[{idx}] parent-invalidated window1 prefetch must not be useful"
+            )
+        if stream_id not in ready_streams:
+            errors.append(f"event[{idx}] prefetch promotion requires ready buffer evidence")
+        consumed = event.get("consumed_insts", event.get("insts", event.get("bytes")))
+        if not isinstance(consumed, int) or consumed <= 0:
+            errors.append(
+                f"event[{idx}] prefetch promotion/useful must report positive consumed_insts or bytes"
+            )
+        used_streams.add(stream_id)
+
+    return errors
+
+
 def validate(
     events: Iterable[tuple[int, Any]],
     *,
     allow_live_tail: int = 0,
+    require_two_fetch_supply: bool = False,
 ) -> tuple[str, list[str], dict[str, Any]]:
     errors: list[str] = []
     predictions: dict[str, dict[str, Any]] = {}
@@ -651,6 +805,15 @@ def validate(
     two_fetch_window1_metadata: dict[str, str] = {}
     two_fetch_window1_metadata_info: dict[str, dict[str, Any]] = {}
     two_fetch_window1_metadata_consumed: set[str] = set()
+    two_fetch_window1_metadata_streams: dict[str, str] = {}
+    two_fetch_stream_epochs: dict[str, str] = {}
+    two_fetch_stream_to_metadata: dict[str, str] = {}
+    two_fetch_parent_invalidated_streams: set[str] = set()
+    two_fetch_supply_evidence_streams: set[str] = set()
+    two_fetch_prefetch_issued_streams: set[str] = set()
+    two_fetch_prefetch_ready_streams: set[str] = set()
+    two_fetch_prefetch_used_streams: set[str] = set()
+    two_fetch_supply_event_count = 0
     two_fetch_predict_response_count = 0
     two_fetch_window1_materialized_count = 0
     two_fetch_window1_consume_count = 0
@@ -674,14 +837,38 @@ def validate(
         metadata_id_s = str(metadata_id) if metadata_id is not None else None
         if metadata_id_s is not None and event.get("two_fetch_parent_invalidated") is True:
             parent_invalidated_metadata_ids.add(metadata_id_s)
+            stream_id = two_fetch_window1_metadata_streams.get(metadata_id_s)
+            if stream_id is not None:
+                two_fetch_parent_invalidated_streams.add(stream_id)
         if metadata_id_s is not None and metadata_id_s in states:
             metadata_id_s = str(metadata_id)
             state = str(event.get("metadata_state", STATE_ALIASES.get(str(etype), str(etype))))
             states[metadata_id_s].add(state)
 
+        if etype in TWO_FETCH_SUPPLY_EVENTS:
+            two_fetch_supply_event_count += 1
+            errors.extend(
+                validate_supply_event(
+                    idx,
+                    event,
+                    stream_epochs=two_fetch_stream_epochs,
+                    parent_invalidated_streams=two_fetch_parent_invalidated_streams,
+                    supply_evidence_streams=two_fetch_supply_evidence_streams,
+                    issued_streams=two_fetch_prefetch_issued_streams,
+                    ready_streams=two_fetch_prefetch_ready_streams,
+                    used_streams=two_fetch_prefetch_used_streams,
+                )
+            )
+
         if etype == "predict_response":
             predict_response_count += 1
-            errors.extend(validate_predict_response(idx, event))
+            errors.extend(
+                validate_predict_response(
+                    idx,
+                    event,
+                    require_two_fetch_supply=require_two_fetch_supply,
+                )
+            )
             if metadata_id_s is not None:
                 metadata_count += 1
                 predictions[metadata_id_s] = {
@@ -699,6 +886,13 @@ def validate(
                 if window_slot == 1:
                     two_fetch_window1_materialized_count += 1
                     two_fetch_batches_with_window1.add(batch_id)
+                    stream_id = event_stream_id(event)
+                    stream_epoch = event_stream_epoch(event)
+                    if stream_id is not None and stream_epoch is not None:
+                        two_fetch_stream_epochs[stream_id] = stream_epoch
+                        if metadata_id_s is not None:
+                            two_fetch_window1_metadata_streams[metadata_id_s] = stream_id
+                            two_fetch_stream_to_metadata[stream_id] = metadata_id_s
                     if metadata_id_s is not None:
                         two_fetch_window1_metadata[metadata_id_s] = batch_id
                         two_fetch_window1_metadata_info[metadata_id_s] = {
@@ -728,6 +922,9 @@ def validate(
             for mid in event.get("parent_invalidated_metadata_ids", []):
                 mid_s = str(mid)
                 parent_invalidated_metadata_ids.add(mid_s)
+                stream_id = two_fetch_window1_metadata_streams.get(mid_s)
+                if stream_id is not None:
+                    two_fetch_parent_invalidated_streams.add(stream_id)
                 if mid_s not in metadata_to_drop:
                     errors.append(
                         f"event[{idx}] parent-invalidated metadata_id {mid_s} "
@@ -849,6 +1046,30 @@ def validate(
             errors.append(
                 f"two_fetch window1 metadata_id {metadata_id} has no fetch consume or flush evidence"
             )
+    if require_two_fetch_supply:
+        for metadata_id, batch_id in sorted(two_fetch_window1_metadata.items()):
+            stream_id = two_fetch_window1_metadata_streams.get(metadata_id)
+            if stream_id is None:
+                errors.append(
+                    f"two_fetch window1 metadata_id {metadata_id} is missing commercial stream identity"
+                )
+                continue
+            if (
+                stream_id not in two_fetch_supply_evidence_streams
+                and metadata_id not in two_fetch_window1_metadata_flushed
+                and metadata_id not in live_tail_allowed_metadata
+            ):
+                errors.append(
+                    f"two_fetch stream {stream_id} for metadata_id {metadata_id} "
+                    "has no prefetch supply/drop/cancel evidence"
+                )
+            if (
+                metadata_id in parent_invalidated_metadata_ids
+                and stream_id in two_fetch_prefetch_used_streams
+            ):
+                errors.append(
+                    f"two_fetch stream {stream_id} was parent-invalidated but later used"
+                )
 
     error_count = len(errors)
     if error_count > 1000:
@@ -871,13 +1092,75 @@ def validate(
         "two_fetch_window1_flushed_count": len(two_fetch_window1_metadata_flushed),
         "two_fetch_window1_live_tail_allowed_count": len(live_tail_allowed_metadata),
         "two_fetch_window1_unresolved_count": len(unresolved_window1_metadata),
+        "two_fetch_supply_required": require_two_fetch_supply,
+        "two_fetch_supply_event_count": two_fetch_supply_event_count,
+        "two_fetch_stream_count": len(two_fetch_stream_epochs),
+        "two_fetch_prefetch_issued_stream_count": len(two_fetch_prefetch_issued_streams),
+        "two_fetch_prefetch_ready_stream_count": len(two_fetch_prefetch_ready_streams),
+        "two_fetch_prefetch_used_stream_count": len(two_fetch_prefetch_used_streams),
+        "two_fetch_parent_invalidated_stream_count": len(two_fetch_parent_invalidated_streams),
     }
     return ("pass" if error_count == 0 else "fail"), errors, details
+
+
+def run_self_test() -> dict[str, Any]:
+    script_dir = Path(__file__).resolve().parent
+    cases: list[dict[str, Any]] = []
+
+    def run_case(name: str, path: Path | None, *, expect_fail: bool, strict: bool, sample: bool = False) -> None:
+        status, errors, details = validate(
+            iter_events(path, sample),
+            require_two_fetch_supply=strict,
+        )
+        expected_status = "fail" if expect_fail else "pass"
+        cases.append(
+            {
+                "name": name,
+                "path": str(path) if path else None,
+                "strict": strict,
+                "expected": expected_status,
+                "actual": status,
+                "ok": status == expected_status,
+                "error_count": len(errors),
+                "details": details,
+            }
+        )
+
+    run_case("sample", None, expect_fail=False, strict=False, sample=True)
+
+    fixture_dir = script_dir / "fixtures" / "bpu-two-ahead-two-taken"
+    for path in sorted(fixture_dir.glob("*.json")):
+        run_case(
+            path.name,
+            path,
+            expect_fail=path.name.startswith("invalid-"),
+            strict=False,
+        )
+
+    supply_fixture_dir = script_dir / "fixtures" / "bpu-two-ahead-two-taken-supply"
+    for path in sorted(supply_fixture_dir.glob("*.json")):
+        run_case(
+            path.name,
+            path,
+            expect_fail=path.name.startswith("invalid-"),
+            strict=True,
+        )
+
+    failed = [case for case in cases if not case["ok"]]
+    return {
+        "schema_version": 1,
+        "target": "bpu-two-ahead-two-taken-self-test",
+        "status": "pass" if not failed else "fail",
+        "case_count": len(cases),
+        "failed_count": len(failed),
+        "cases": cases,
+    }
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sample", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--input", type=Path)
     parser.add_argument(
         "--output",
@@ -898,7 +1181,20 @@ def main(argv: list[str]) -> int:
             "the end of a bounded trace. Default 0 keeps complete-trace validation strict."
         ),
     )
+    parser.add_argument(
+        "--require-two-fetch-supply",
+        action="store_true",
+        help="Require commercial 2-fetch stream identity and supply/drop/cancel evidence.",
+    )
     args = parser.parse_args(argv)
+    if args.self_test:
+        payload = run_self_test()
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(f"VALIDATION_STATUS={payload['status']}")
+        print("VALIDATION_REASON=bpu 2-fetch checker self-test")
+        return 0 if payload["status"] == "pass" else 1
     if args.allow_live_tail < 0:
         parser.error("--allow-live-tail must be non-negative")
 
@@ -906,6 +1202,7 @@ def main(argv: list[str]) -> int:
         status, errors, details = validate(
             iter_events(args.input, args.sample),
             allow_live_tail=args.allow_live_tail,
+            require_two_fetch_supply=args.require_two_fetch_supply,
         )
     except Exception as exc:
         status, errors, details = "fail", [str(exc)], {}

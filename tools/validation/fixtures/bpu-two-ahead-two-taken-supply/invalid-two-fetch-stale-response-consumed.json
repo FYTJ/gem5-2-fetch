@@ -1,0 +1,67 @@
+{
+  "events": [
+    {
+      "event": "predict_response",
+      "cycle": 1,
+      "pc": "0x80000000",
+      "fetch_id": 100,
+      "taken": false,
+      "target": "0x80000040",
+      "source": "base",
+      "metadata_id": "m100",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "two_fetch",
+      "two_fetch_batch_id": 100,
+      "two_fetch_batch_size": 2,
+      "two_fetch_window_slot": 0,
+      "two_fetch_materialized": true,
+      "two_fetch_prediction_kind": "predictor_backed_accepted",
+      "two_fetch_predictor_backed": true,
+      "two_fetch_prediction_accepted": true,
+      "two_fetch_pred_hit": true,
+      "ahead_windows": [
+        {"slot": 0, "valid": true, "pc": "0x80000000", "fallthrough": "0x80000040", "source": "base", "epoch": "e0"},
+        {"slot": 1, "valid": true, "pc": "0x80000040", "fallthrough": "0x80000080", "source": "fallthrough", "epoch": "e0"}
+      ],
+      "taken_slots": [{"slot": 0, "valid": false}, {"slot": 1, "valid": false}]
+    },
+    {
+      "event": "predict_response",
+      "cycle": 2,
+      "pc": "0x80000040",
+      "fetch_id": 101,
+      "taken": false,
+      "target": "0x80000080",
+      "source": "two_fetch",
+      "metadata_id": "m101",
+      "metadata_state": "allocated",
+      "epoch": "e0",
+      "mode": "two_fetch",
+      "two_fetch_batch_id": 100,
+      "two_fetch_batch_size": 2,
+      "two_fetch_window_slot": 1,
+      "two_fetch_parent_fetch_id": 100,
+      "two_fetch_stream_id": "s101",
+      "two_fetch_epoch": "e0",
+      "two_fetch_prefetch_state": "issued",
+      "two_fetch_materialized": true,
+      "two_fetch_prediction_kind": "predictor_backed_accepted",
+      "two_fetch_predictor_backed": true,
+      "two_fetch_prediction_accepted": true,
+      "two_fetch_pred_hit": true,
+      "ahead_windows": [
+        {"slot": 0, "valid": true, "pc": "0x80000040", "fallthrough": "0x80000080", "source": "two_fetch", "epoch": "e0"},
+        {"slot": 1, "valid": true, "pc": "0x80000080", "fallthrough": "0x800000c0", "source": "fallthrough", "epoch": "e0"}
+      ],
+      "taken_slots": [{"slot": 0, "valid": false}, {"slot": 1, "valid": false}]
+    },
+    {"event": "two_fetch_prefetch_request", "cycle": 3, "fetch_id": 101, "metadata_id": "m101", "epoch": "e0", "two_fetch_window_slot": 1, "two_fetch_stream_id": "s101", "two_fetch_epoch": "e0", "cacheline_base": "0x80000040", "line_index": 0},
+    {"event": "two_fetch_prefetch_response", "cycle": 4, "fetch_id": 101, "metadata_id": "m101", "epoch": "e1", "two_fetch_window_slot": 1, "two_fetch_stream_id": "s101", "two_fetch_epoch": "e1", "cacheline_base": "0x80000040", "line_index": 0, "destination": "prefetch_buffer", "stale": true},
+    {"event": "two_fetch_prefetch_promote", "cycle": 5, "fetch_id": 101, "metadata_id": "m101", "epoch": "e1", "two_fetch_window_slot": 1, "two_fetch_stream_id": "s101", "two_fetch_epoch": "e1", "consumed_insts": 4},
+    {"event": "fetch_consume", "cycle": 6, "fetch_id": 101, "metadata_id": "m101", "metadata_state": "fetch_consume", "epoch": "e0", "two_fetch_batch_id": 100, "two_fetch_window_slot": 1, "consumed_insts": 4},
+    {"event": "resolve", "cycle": 7, "pc": "0x80000000", "fetch_id": 100, "actual_taken": false, "actual_target": "0x80000040", "metadata_id": "m100", "metadata_state": "resolved", "epoch": "e0"},
+    {"event": "train", "cycle": 8, "pc": "0x80000000", "outcome": {"taken": false, "target": "0x80000040"}, "metadata_id": "m100", "metadata_state": "trained", "epoch": "e0", "tables": ["base"]},
+    {"event": "commit", "cycle": 9, "pc": "0x80000000", "fetch_id": 100, "metadata_id": "m100", "metadata_state": "committed", "epoch": "e0"}
+  ]
+}
