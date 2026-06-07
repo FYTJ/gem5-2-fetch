@@ -376,6 +376,14 @@ def event_stream_epoch(event: dict[str, Any]) -> str | None:
     return str(raw) if raw is not None else None
 
 
+def event_stream_key(event: dict[str, Any]) -> str | None:
+    stream_id = event_stream_id(event)
+    stream_epoch = event_stream_epoch(event)
+    if stream_id is None or stream_epoch is None:
+        return None
+    return f"{stream_id}@{stream_epoch}"
+
+
 def normalized_destination(value: Any) -> str:
     return str(value).strip().lower() if value is not None else ""
 
@@ -724,14 +732,15 @@ def validate_supply_event(
     )
     stream_id = event_stream_id(event)
     stream_epoch = event_stream_epoch(event)
-    if stream_id is None or stream_epoch is None:
+    stream_key = event_stream_key(event)
+    if stream_id is None or stream_epoch is None or stream_key is None:
         return errors
-    supply_evidence_streams.add(stream_id)
+    supply_evidence_streams.add(stream_key)
 
     if event.get("two_fetch_window_slot") != 1:
         errors.append(f"event[{idx}] {etype} must refer to window1")
 
-    expected_epoch = stream_epochs.get(stream_id)
+    expected_epoch = stream_epochs.get(stream_key)
     destination = normalized_destination(
         event.get("destination", event.get("response_destination", event.get("buffer")))
     )
@@ -749,7 +758,7 @@ def validate_supply_event(
             errors,
         )
         parse_addr(event.get("cacheline_base"), "cacheline_base", errors, idx)
-        issued_streams.add(stream_id)
+        issued_streams.add(stream_key)
     elif etype == "two_fetch_prefetch_response":
         required(
             event,
@@ -765,35 +774,35 @@ def validate_supply_event(
         if event.get("stale") is True and not is_discard:
             errors.append(f"event[{idx}] stale prefetch response must be discarded")
         if destination in READY_PREFETCH_RESPONSE_DESTINATIONS:
-            ready_streams.add(stream_id)
+            ready_streams.add(stream_key)
     elif etype == "two_fetch_prefetch_promote":
-        if stream_id in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
+        if stream_key in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
             errors.append(
                 f"event[{idx}] parent-invalidated window1 prefetch must not be promoted"
             )
-        if stream_id not in ready_streams:
+        if stream_key not in ready_streams:
             errors.append(f"event[{idx}] prefetch promotion requires ready buffer evidence")
         consumed = event.get("consumed_insts", event.get("insts", event.get("bytes")))
         if not isinstance(consumed, int) or consumed <= 0:
             errors.append(
                 f"event[{idx}] prefetch promotion must report positive consumed_insts or bytes"
             )
-        promoted_streams.add(stream_id)
+        promoted_streams.add(stream_key)
     elif etype == "two_fetch_prefetch_useful":
-        if stream_id in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
+        if stream_key in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
             errors.append(
                 f"event[{idx}] parent-invalidated window1 prefetch must not be useful"
             )
-        if stream_id not in ready_streams:
+        if stream_key not in ready_streams:
             errors.append(f"event[{idx}] prefetch useful requires ready buffer evidence")
-        if stream_id not in promoted_streams:
+        if stream_key not in promoted_streams:
             errors.append(f"event[{idx}] prefetch useful requires prior promotion evidence")
         consumed = event.get("consumed_insts", event.get("insts", event.get("bytes")))
         if not isinstance(consumed, int) or consumed <= 0:
             errors.append(
                 f"event[{idx}] prefetch useful must report positive consumed_insts or bytes"
             )
-        useful_streams.add(stream_id)
+        useful_streams.add(stream_key)
 
     return errors
 
@@ -854,9 +863,9 @@ def validate(
         metadata_id_s = str(metadata_id) if metadata_id is not None else None
         if metadata_id_s is not None and event.get("two_fetch_parent_invalidated") is True:
             parent_invalidated_metadata_ids.add(metadata_id_s)
-            stream_id = two_fetch_window1_metadata_streams.get(metadata_id_s)
-            if stream_id is not None:
-                two_fetch_parent_invalidated_streams.add(stream_id)
+            stream_key = two_fetch_window1_metadata_streams.get(metadata_id_s)
+            if stream_key is not None:
+                two_fetch_parent_invalidated_streams.add(stream_key)
         if metadata_id_s is not None and metadata_id_s in states:
             metadata_id_s = str(metadata_id)
             state = str(event.get("metadata_state", STATE_ALIASES.get(str(etype), str(etype))))
@@ -906,11 +915,12 @@ def validate(
                     two_fetch_batches_with_window1.add(batch_id)
                     stream_id = event_stream_id(event)
                     stream_epoch = event_stream_epoch(event)
-                    if stream_id is not None and stream_epoch is not None:
-                        two_fetch_stream_epochs[stream_id] = stream_epoch
+                    stream_key = event_stream_key(event)
+                    if stream_id is not None and stream_epoch is not None and stream_key is not None:
+                        two_fetch_stream_epochs[stream_key] = stream_epoch
                         if metadata_id_s is not None:
-                            two_fetch_window1_metadata_streams[metadata_id_s] = stream_id
-                            two_fetch_stream_to_metadata[stream_id] = metadata_id_s
+                            two_fetch_window1_metadata_streams[metadata_id_s] = stream_key
+                            two_fetch_stream_to_metadata[stream_key] = metadata_id_s
                     if metadata_id_s is not None:
                         two_fetch_window1_metadata[metadata_id_s] = batch_id
                         two_fetch_window1_metadata_info[metadata_id_s] = {
@@ -940,9 +950,9 @@ def validate(
             for mid in event.get("parent_invalidated_metadata_ids", []):
                 mid_s = str(mid)
                 parent_invalidated_metadata_ids.add(mid_s)
-                stream_id = two_fetch_window1_metadata_streams.get(mid_s)
-                if stream_id is not None:
-                    two_fetch_parent_invalidated_streams.add(stream_id)
+                stream_key = two_fetch_window1_metadata_streams.get(mid_s)
+                if stream_key is not None:
+                    two_fetch_parent_invalidated_streams.add(stream_key)
                 if mid_s not in metadata_to_drop:
                     errors.append(
                         f"event[{idx}] parent-invalidated metadata_id {mid_s} "
