@@ -230,6 +230,8 @@ def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[st
                 f"--bpu-two-fetch-usefulness-table-size={args.two_fetch_usefulness_table_size}",
                 f"--bpu-two-fetch-usefulness-threshold={args.two_fetch_usefulness_threshold}",
                 f"--bpu-two-fetch-usefulness-max={args.two_fetch_usefulness_max}",
+                f"--bpu-two-fetch-usefulness-explore-interval={args.two_fetch_usefulness_explore_interval}",
+                f"--bpu-two-fetch-usefulness-explore-min-free-ftq={args.two_fetch_usefulness_explore_min_free_ftq}",
             ]
         )
     if args.difftest_mode == "enabled":
@@ -268,6 +270,8 @@ def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[st
             "usefulness_table_size": args.two_fetch_usefulness_table_size,
             "usefulness_threshold": args.two_fetch_usefulness_threshold,
             "usefulness_max": args.two_fetch_usefulness_max,
+            "usefulness_explore_interval": args.two_fetch_usefulness_explore_interval,
+            "usefulness_explore_min_free_ftq": args.two_fetch_usefulness_explore_min_free_ftq,
         },
     }
     return command, metadata
@@ -396,6 +400,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--two-fetch-usefulness-table-size", type=int, default=2048)
     parser.add_argument("--two-fetch-usefulness-threshold", type=int, default=-1)
     parser.add_argument("--two-fetch-usefulness-max", type=int, default=3)
+    parser.add_argument("--two-fetch-usefulness-explore-interval", type=int, default=16)
+    parser.add_argument("--two-fetch-usefulness-explore-min-free-ftq", type=int, default=4)
     parser.add_argument("--extra-gem5-arg", action="append", default=[])
     args = parser.parse_args(argv)
 
