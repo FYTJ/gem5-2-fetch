@@ -224,6 +224,14 @@ def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[st
         command.append("--enable-bpu-two-fetch")
         if trace_policy == "disabled":
             command.append("--disable-bpu-two-fetch-trace")
+        command.extend(
+            [
+                f"--bpu-two-fetch-gate-min-free-ftq={args.two_fetch_gate_min_free_ftq}",
+                f"--bpu-two-fetch-usefulness-table-size={args.two_fetch_usefulness_table_size}",
+                f"--bpu-two-fetch-usefulness-threshold={args.two_fetch_usefulness_threshold}",
+                f"--bpu-two-fetch-usefulness-max={args.two_fetch_usefulness_max}",
+            ]
+        )
     if args.difftest_mode == "enabled":
         command.extend(["--enable-difftest", f"--difftest-ref-so={args.difftest_ref_so}"])
 
@@ -253,6 +261,14 @@ def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[st
         "checkpoint_kind": checkpoint_kind,
         "image": str(image),
         "m5out": str(m5out),
+        "two_fetch": {
+            "enabled": args.mode == "on",
+            "trace_policy": trace_policy,
+            "gate_min_free_ftq": args.two_fetch_gate_min_free_ftq,
+            "usefulness_table_size": args.two_fetch_usefulness_table_size,
+            "usefulness_threshold": args.two_fetch_usefulness_threshold,
+            "usefulness_max": args.two_fetch_usefulness_max,
+        },
     }
     return command, metadata
 
@@ -376,6 +392,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--parallel-jobs-requested", type=int, default=1)
     parser.add_argument("--min-mem-gib-per-job", type=float, default=8.0)
     parser.add_argument("--min-workspace-free-gib", type=float, default=20.0)
+    parser.add_argument("--two-fetch-gate-min-free-ftq", type=int, default=3)
+    parser.add_argument("--two-fetch-usefulness-table-size", type=int, default=2048)
+    parser.add_argument("--two-fetch-usefulness-threshold", type=int, default=-1)
+    parser.add_argument("--two-fetch-usefulness-max", type=int, default=3)
     parser.add_argument("--extra-gem5-arg", action="append", default=[])
     args = parser.parse_args(argv)
 
