@@ -332,14 +332,19 @@ STATE_ALIASES = {
 
 TWO_FETCH_MODES = {"two_fetch", "two-fetch", "2fetch", "2-fetch"}
 TWO_FETCH_SUPPLY_EVENTS = {
+    "two_fetch_prefetch_eligible",
+    "two_fetch_prefetch_queued",
+    "two_fetch_prefetch_blocked",
     "two_fetch_prefetch_request",
     "two_fetch_prefetch_response",
     "two_fetch_prefetch_drop",
     "two_fetch_prefetch_cancel",
     "two_fetch_prefetch_backpressure",
+    "two_fetch_prefetch_demand_preempt",
     "two_fetch_prefetch_ready_before_demand",
     "two_fetch_prefetch_promote",
     "two_fetch_prefetch_useful",
+    "two_fetch_supply_queue_blocked",
 }
 BAD_PREFETCH_RESPONSE_DESTINATIONS = {
     "fetchbuffer",
