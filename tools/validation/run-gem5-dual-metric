@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -27,6 +28,35 @@ def now_iso() -> str:
 
 def command_text(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
+
+
+def safe_label(value: str) -> str:
+    label = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
+    label = label.strip("-_.")
+    return label or "unknown"
+
+
+def checkpoint_label(checkpoint: str) -> str:
+    path = Path(checkpoint)
+    parts = path.parts
+    if "temp" in parts:
+        index = parts.index("temp")
+        if index + 2 < len(parts):
+            return safe_label(f"{parts[index + 1]}-{parts[index + 2]}")
+    match = re.match(r"^_(?P<point>\d+)_", path.name)
+    if match and len(path.parents) >= 2:
+        return safe_label(f"{path.parents[1].name}-{match.group('point')}")
+    return safe_label(path.stem or path.name)
+
+
+def run_directory_label(args: argparse.Namespace) -> str:
+    parts = [args.workload]
+    if args.workload == "spec06" and args.checkpoint:
+        parts.append(checkpoint_label(args.checkpoint))
+    parts.extend([args.mode, args.metric])
+    if args.two_fetch_oracle_mode != "disabled":
+        parts.append(args.two_fetch_oracle_mode)
+    return "-".join(safe_label(part) for part in parts)
 
 
 def run_capture(command: list[str], cwd: Path) -> tuple[int, str]:
@@ -224,6 +254,8 @@ def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[st
         command.append("--enable-bpu-two-fetch")
         if trace_policy == "disabled":
             command.append("--disable-bpu-two-fetch-trace")
+        if args.two_fetch_oracle_mode != "disabled":
+            command.append(f"--bpu-two-fetch-oracle-mode={args.two_fetch_oracle_mode}")
         command.extend(
             [
                 f"--bpu-two-fetch-gate-min-free-ftq={args.two_fetch_gate_min_free_ftq}",
@@ -272,6 +304,7 @@ def build_gem5_command(args: argparse.Namespace, runroot: Path) -> tuple[list[st
             "usefulness_max": args.two_fetch_usefulness_max,
             "usefulness_explore_interval": args.two_fetch_usefulness_explore_interval,
             "usefulness_explore_min_free_ftq": args.two_fetch_usefulness_explore_min_free_ftq,
+            "oracle_mode": args.two_fetch_oracle_mode,
         },
     }
     return command, metadata
@@ -402,12 +435,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--two-fetch-usefulness-max", type=int, default=3)
     parser.add_argument("--two-fetch-usefulness-explore-interval", type=int, default=16)
     parser.add_argument("--two-fetch-usefulness-explore-min-free-ftq", type=int, default=4)
+    parser.add_argument(
+        "--two-fetch-oracle-mode",
+        choices=("disabled", "ideal-ready", "ideal-promotion"),
+        default="disabled",
+    )
     parser.add_argument("--extra-gem5-arg", action="append", default=[])
     args = parser.parse_args(argv)
 
     root = repo_root()
-    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    runroot = root / args.run_root / f"{args.workload}-{args.mode}-{args.metric}-{stamp}"
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    runroot = root / args.run_root / f"{run_directory_label(args)}-{stamp}-p{os.getpid()}"
     m5out = runroot / "m5out"
     runroot.mkdir(parents=True, exist_ok=True)
 

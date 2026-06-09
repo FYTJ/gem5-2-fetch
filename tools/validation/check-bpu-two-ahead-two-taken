@@ -337,6 +337,7 @@ TWO_FETCH_SUPPLY_EVENTS = {
     "two_fetch_prefetch_drop",
     "two_fetch_prefetch_cancel",
     "two_fetch_prefetch_backpressure",
+    "two_fetch_prefetch_ready_before_demand",
     "two_fetch_prefetch_promote",
     "two_fetch_prefetch_useful",
 }
@@ -775,6 +776,22 @@ def validate_supply_event(
             errors.append(f"event[{idx}] stale prefetch response must be discarded")
         if destination in READY_PREFETCH_RESPONSE_DESTINATIONS:
             ready_streams.add(stream_key)
+    elif etype == "two_fetch_prefetch_ready_before_demand":
+        required(
+            event,
+            {"cacheline_base", "line_index", "bytes"},
+            f"event[{idx}] two_fetch_prefetch_ready_before_demand",
+            errors,
+        )
+        parse_addr(event.get("cacheline_base"), "cacheline_base", errors, idx)
+        copied = event.get("bytes")
+        if not isinstance(copied, int) or copied <= 0:
+            errors.append(
+                f"event[{idx}] prefetch ready-before-demand must report positive bytes"
+            )
+        if event.get("stale") is True:
+            errors.append(f"event[{idx}] stale ready-before-demand evidence is invalid")
+        ready_streams.add(stream_key)
     elif etype == "two_fetch_prefetch_promote":
         if stream_key in parent_invalidated_streams or event.get("two_fetch_parent_invalidated") is True:
             errors.append(
