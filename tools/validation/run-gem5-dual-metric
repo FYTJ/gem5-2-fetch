@@ -437,7 +437,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--two-fetch-usefulness-explore-min-free-ftq", type=int, default=4)
     parser.add_argument(
         "--two-fetch-oracle-mode",
-        choices=("disabled", "ideal-ready", "ideal-promotion"),
+        choices=("disabled", "ideal-ready", "ideal-promotion", "ideal-frontend"),
         default="disabled",
     )
     parser.add_argument("--extra-gem5-arg", action="append", default=[])
