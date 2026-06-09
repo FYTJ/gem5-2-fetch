@@ -9,3 +9,5 @@ build/external/
 .cache/spec2006-logs/
 __pycache__/
 *.pyc
+AGENTS.md
+CLAUDE.md
