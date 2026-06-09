@@ -1,0 +1,106 @@
+name: PR Quick Check (Tier 1)
+
+on:
+  pull_request:
+    branches: [ xs-dev ]
+    # 如果只修改了文档，不跑CI
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  quick_check:
+    runs-on: [self-hosted, node]
+    continue-on-error: false
+    name: Quick Build, Unit Tests & Smoke Test
+    steps:
+      - uses: actions/checkout@v6
+      
+      - uses: ./.github/actions/build-dramsim
+      
+      - name: Build GEM5 opt
+        run: |
+          CC=gcc CXX=g++ scons build/RISCV/gem5.opt --linker=gold -j64
+      
+      - name: Run unit tests
+        run: |
+          CC=gcc CXX=g++ scons build/RISCV/unittests.opt -j100 --unit-test
+
+      - name: Difftest smoke test
+        run: |
+          export GCBV_REF_SO="/nfs/home/share/gem5_ci/ref/normal/riscv64-nemu-notama-tvalref-so"
+          
+          exit_code=0
+          ./build/RISCV/gem5.opt ./configs/example/kmhv3.py --raw-cpt --generic-rv-cpt=/nfs/home/share/gem5_ci/checkpoints/coremark-riscv64-xs.bin || exit_code=$?
+          
+          # 验证 difftest 正常运行
+          if [ "${exit_code}" -ne 0 ]; then 
+            echo "❌ Difftest failed with exit code ${exit_code}!"
+            exit 1
+          fi
+          
+          # 提取 PR 分支的 IPC
+          IPC_PR=$(grep "cpu.ipc" ./m5out/stats.txt | awk '{print $2}')
+          echo "PR branch Coremark IPC: ${IPC_PR}"
+          echo "${IPC_PR}" > /tmp/ipc_pr.txt
+      
+      - name: Test base branch for comparison
+        run: |
+          export GCBV_REF_SO="/nfs/home/share/gem5_ci/ref/normal/riscv64-nemu-notama-tvalref-so"
+          
+          # 保存当前分支
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          
+          # 切换到目标分支
+          git fetch origin ${{ github.base_ref }}
+          git checkout origin/${{ github.base_ref }}
+          
+          # 重新编译基线分支，如果失败则重试一次(scons 依赖处理不好)
+          if ! CC=gcc CXX=g++ scons build/RISCV/gem5.opt --linker=gold -j64; then
+            echo "⚠️ Compilation failed, retrying..."
+            CC=gcc CXX=g++ scons build/RISCV/gem5.opt --linker=gold -j64
+          fi
+          
+          # 运行测试
+          exit_code=0
+          ./build/RISCV/gem5.opt ./configs/example/kmhv3.py --raw-cpt --generic-rv-cpt=/nfs/home/share/gem5_ci/checkpoints/coremark-riscv64-xs.bin || exit_code=$?
+          
+          if [ "${exit_code}" -ne 0 ]; then 
+            echo "❌ Base branch difftest failed with exit code ${exit_code}!"
+            exit 1
+          fi
+          
+          # 提取基线分支的 IPC
+          IPC_BASE=$(grep "cpu.ipc" ./m5out/stats.txt | awk '{print $2}')
+          echo "Base branch Coremark IPC: ${IPC_BASE}"
+          echo "${IPC_BASE}" > /tmp/ipc_base.txt
+          
+          # 切换回 PR 分支
+          git checkout ${CURRENT_BRANCH}
+      
+      - name: Comment IPC comparison to PR
+        continue-on-error: true  # Fork PRs don't have write permission
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const ipcPR = parseFloat(fs.readFileSync('/tmp/ipc_pr.txt', 'utf8').trim());
+            const ipcBase = parseFloat(fs.readFileSync('/tmp/ipc_base.txt', 'utf8').trim());
+            
+            const diff = ipcPR - ipcBase;
+            const diffPercent = ((diff / ipcBase) * 100).toFixed(2);
+            const diffSign = diff > 0 ? '+' : '';
+            const emoji = diff > 0 ? '📈' : (diff < 0 ? '📉' : '➡️');
+            
+            const comment = `## 🚀 Coremark Smoke Test Results\n\n| Branch | IPC | Change |\n|--------|-----|--------|\n| Base (\`${{ github.base_ref }}\`) | \`${ipcBase.toFixed(4)}\` | - |\n| This PR | \`${ipcPR.toFixed(4)}\` | ${emoji} \`${diffSign}${diff.toFixed(4)}\` (\`${diffSign}${diffPercent}%\`) |\n\n✅ Difftest smoke test passed!`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });

@@ -1,0 +1,19 @@
+name: 'Build DRAMSim3'
+description: 'Build DRAMSim3 from local cache to avoid network issues'
+runs:
+  using: "composite"
+  steps:
+    - name: Build DRAMSim (cached)
+      shell: bash
+      run: |
+        export GEM5_HOME=$(pwd)
+        cd ext/dramsim3
+        # 使用本地缓存避免网络IO
+        if [ ! -d "DRAMsim3" ]; then
+          cp -r /nfs/home/share/gem5_ci/DRAMsim3 .
+        fi
+        cd DRAMsim3 && mkdir -p build
+        cd build
+        cmake ..
+        make -j 48
+        cd $GEM5_HOME
